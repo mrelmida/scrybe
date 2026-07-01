@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Scrybe
+GenericName=Voice Dictation
+Comment=On-device speech-to-text — speak anywhere, paste anywhere
+Exec=scrybe
+Icon=scrybe
+Terminal=false
+Categories=Utility;
+Keywords=dictation;speech;voice;transcribe;stt;whisper;
+StartupNotify=false

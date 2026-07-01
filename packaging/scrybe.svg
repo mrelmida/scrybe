@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#20222f"/>
+      <stop offset="1" stop-color="#0f1017"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7aa2ff"/>
+      <stop offset="1" stop-color="#a06bff"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <!-- microphone capsule -->
+  <rect x="104" y="52" width="48" height="98" rx="24" fill="url(#accent)"/>
+  <!-- cradle arc -->
+  <path d="M74 122 a54 54 0 0 0 108 0" fill="none" stroke="url(#accent)"
+        stroke-width="12" stroke-linecap="round"/>
+  <!-- stand -->
+  <rect x="122" y="176" width="12" height="26" rx="6" fill="url(#accent)"/>
+  <rect x="96" y="198" width="64" height="12" rx="6" fill="url(#accent)"/>
+</svg>
