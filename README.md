@@ -18,12 +18,14 @@ All speech recognition runs **locally** — nothing leaves your machine.
 curl -fsSL https://mrelmida.dev/scrybe/install.sh | bash
 ```
 
-This installs all dependencies, builds Scrybe, and sets it up as a desktop app
-with a global hotkey and login autostart. Then launch **Scrybe** from your app
-menu (it lives in the system tray) and press **`Meta+Alt+D`** to dictate.
+The installer **detects your GPU** and only pulls what your hardware needs — it
+skips the Intel/OpenVINO stack on NVIDIA or AMD machines, for example. It builds
+Scrybe and sets it up as a desktop app with a global hotkey and login autostart.
+Then launch **Scrybe** from your app menu (it lives in the system tray) and press
+**`Meta+Alt+D`** to dictate.
 
 > Supported distributions: **Fedora**, **Arch**, **Debian/Ubuntu**, **openSUSE**
-> (KDE Plasma 6 / Wayland).
+> (KDE Plasma 6 / Wayland). Works on **Intel, NVIDIA, AMD, or CPU-only** machines.
 
 ## Features
 
@@ -39,7 +41,10 @@ menu (it lives in the system tray) and press **`Meta+Alt+D`** to dictate.
   **custom style presets**.
 - ⚙️ **Settings window** to pick the backend, model, language, and formatting
   style, and to create custom presets.
-- 🔌 **Runs on your hardware** — Intel, NVIDIA, Vulkan GPUs, or CPU.
+- 🔌 **Runs on any hardware** — Intel, NVIDIA, AMD/Vulkan GPUs, or CPU. The
+  installer only builds the backend your machine needs, and you can add others
+  later from **Settings ▸ Hardware**.
+- ⬆️ **Automatic updates** — checks GitHub on launch and updates in place.
 - 💤 **Lightweight** — the model loads on demand and unloads when idle.
 - 🐧 Native **C++/Qt 6 (QML)** for **KDE Plasma 6 / Wayland**.
 
@@ -48,14 +53,18 @@ menu (it lives in the system tray) and press **`Meta+Alt+D`** to dictate.
 Scrybe has pluggable speech-to-text backends and picks the best one for your
 machine automatically (`stt/backend=auto`):
 
-| Backend | Best for | Engine |
-|---|---|---|
-| `openvino` | **Intel** iGPU / Arc / NPU + CPU | OpenVINO GenAI |
-| `faster-whisper` | **NVIDIA** (CUDA) + CPU | CTranslate2 |
-| `whispercpp` | **Vulkan** / CUDA / any GPU + CPU | whisper.cpp |
+| Backend | Best for | Engine | Installed by default on |
+|---|---|---|---|
+| `openvino` | **Intel** iGPU / Arc / NPU + CPU | OpenVINO GenAI | Intel GPUs |
+| `faster-whisper` | **NVIDIA** (CUDA) + CPU | CTranslate2 | NVIDIA / CPU-only |
+| `whispercpp` | **Vulkan** / AMD / any GPU + CPU | whisper.cpp | on request |
 
-Auto-selection uses faster-whisper when an NVIDIA GPU is present, otherwise
-OpenVINO. Any backend can be forced in the config.
+`auto` resolves to **faster-whisper** on NVIDIA, **OpenVINO** on Intel, and
+**faster-whisper on CPU** elsewhere. The OpenVINO backend is compiled in only
+when an Intel GPU is present (or forced with `SCRYBE_WITH_OPENVINO=1`), so the
+app builds and runs on any machine. Any backend can be forced in the config, and
+missing backends can be installed on demand from **Settings ▸ Hardware** (or
+`scripts/install-backend.sh openvino|faster-whisper|whispercpp`).
 
 ## Usage
 
@@ -83,6 +92,7 @@ Settings live in `~/.config/scrybe/scrybe.conf` and most are exposed in the tray
 | `paste/restoreClipboard` | `true`·`false` | `true` | restore clipboard after paste |
 | `llm/model` | Ollama model | `qwen2.5:1.5b` | cleanup model |
 | `whispercpp/endpoint` | URL | `http://127.0.0.1:8080` | whisper-server endpoint |
+| `update/versionUrl` | URL | GitHub `VERSION` | where to check for updates |
 
 ```bash
 kwriteconfig6 --file ~/.config/scrybe/scrybe.conf --group stt --key model turbo
@@ -140,6 +150,18 @@ by a local Ollama model. Pick a **style**:
 It never answers questions or changes meaning, and falls back to the raw text if
 Ollama isn't running. Pull a model with `ollama pull qwen2.5:1.5b`.
 
+## Updates
+
+Scrybe checks GitHub for a newer release a few seconds after launch (it reads a
+plain [`VERSION`](VERSION) file) and shows a tray notification when one is
+available. Update any time from **Settings ▸ Updates** (or the tray → **Check for
+updates…**) — it pulls the latest source and rebuilds in a terminal. To update
+manually:
+
+```bash
+curl -fsSL https://mrelmida.dev/scrybe/install.sh | bash
+```
+
 ## Build from source
 
 ```bash
@@ -189,7 +211,8 @@ scrybe (C++/Qt6 daemon)
 ├── stt/                pluggable backends (OpenVINO · faster-whisper · whisper.cpp)
 ├── llm/LlmBeautifier   Ollama client
 ├── paste/Paster        clipboard + Ctrl+V injection
-└── qml/                animated overlay (island, visualizer, transcript)
+├── update/Updater      GitHub version check + in-place update
+└── qml/                overlay + settings window (sidebar, hardware, updates)
 ```
 
 Global hotkeys use KDE's KGlobalAccel; the overlay is a Wayland layer-shell
@@ -197,10 +220,11 @@ surface that returns focus to your app for pasting.
 
 ## Roadmap
 
-- [ ] Settings UI (in place of editing the config file)
+- [x] Settings UI (in place of editing the config file)
+- [x] Hardware-aware install + on-demand backend management in the UI
+- [x] Automatic updates
 - [ ] Voice-activity detection
 - [ ] Configurable paste shortcut (terminal support)
-- [ ] Per-backend model management in the UI
 
 ## License
 

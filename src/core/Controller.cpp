@@ -5,13 +5,20 @@
 #include "paste/Paster.h"
 #include "stt/Models.h"
 #include "stt/SttEngine.h"
+#include "update/Updater.h"
+#include "util/Terminal.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+
+#ifndef SCRYBE_HAVE_OPENVINO
+#define SCRYBE_HAVE_OPENVINO 0
+#endif
 
 namespace {
 constexpr int kPartialIntervalMs = 900;   // how often to refresh live text
@@ -22,6 +29,41 @@ QString modelsRoot() {
     // ~/.local/share/scrybe/models  (matches scripts/download-model.sh)
     return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
         .filePath(QStringLiteral("scrybe/models"));
+}
+
+// Detected GPU vendors. Read from sysfs PCI vendor ids (no external tools).
+struct Gpus {
+    bool nvidia = false;
+    bool intel = false;
+    bool amd = false;
+    QStringList names;   // human-readable labels
+};
+
+Gpus detectGpus() {
+    Gpus g;
+    if (QFileInfo::exists(QStringLiteral("/proc/driver/nvidia/version")) ||
+        !QStandardPaths::findExecutable(QStringLiteral("nvidia-smi")).isEmpty())
+        g.nvidia = true;
+
+    // Each render node exposes its PCI vendor id at device/vendor.
+    const QDir drm(QStringLiteral("/sys/class/drm"));
+    const auto cards = drm.entryList(QStringList{QStringLiteral("card[0-9]*")},
+                                     QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &card : cards) {
+        if (card.contains(QLatin1Char('-')))   // skip connector nodes (card0-HDMI…)
+            continue;
+        QFile vf(drm.filePath(card + QStringLiteral("/device/vendor")));
+        if (!vf.open(QIODevice::ReadOnly))
+            continue;
+        const QString v = QString::fromLatin1(vf.readAll()).trimmed().toLower();
+        if (v == QLatin1String("0x8086")) g.intel = true;
+        else if (v == QLatin1String("0x10de")) g.nvidia = true;
+        else if (v == QLatin1String("0x1002")) g.amd = true;
+    }
+    if (g.nvidia) g.names << QStringLiteral("NVIDIA (CUDA)");
+    if (g.intel)  g.names << QStringLiteral("Intel (iGPU/Arc)");
+    if (g.amd)    g.names << QStringLiteral("AMD (Vulkan/ROCm)");
+    return g;
 }
 } // namespace
 
@@ -53,6 +95,10 @@ Controller::Controller(QObject *parent) : QObject(parent) {
 
     m_paster = new Paster(this);
     connect(m_paster, &Paster::error, this,
+            [this](const QString &msg) { emit notify(msg); });
+
+    m_updater = new Updater(this);
+    connect(m_updater, &Updater::notify, this,
             [this](const QString &msg) { emit notify(msg); });
 
     m_llm = new LlmBeautifier(this);
@@ -87,6 +133,7 @@ Controller::Controller(QObject *parent) : QObject(parent) {
     // The model is loaded lazily when recording starts (not at launch).
     QSettings s;
     m_model = s.value(QStringLiteral("stt/model"), QStringLiteral("small")).toString();
+    m_theme = s.value(QStringLiteral("ui/theme"), QStringLiteral("oled")).toString();
     m_language = s.value(QStringLiteral("stt/language"), QStringLiteral("auto")).toString();
     m_previewEnabled = s.value(QStringLiteral("ui/preview"), true).toBool();
     m_beautifyStyle = s.value(QStringLiteral("llm/style"), QStringLiteral("format")).toString();
@@ -98,16 +145,23 @@ QString Controller::device() const {
                              QStringLiteral("AUTO:GPU,CPU")).toString();
 }
 
-// Resolve the STT backend. "auto" picks faster-whisper if an NVIDIA GPU is
-// present, otherwise OpenVINO (best on Intel iGPU/Arc/NPU + CPU).
+// Resolve the STT backend. "auto" picks the best engine for the detected
+// hardware: NVIDIA → faster-whisper (CUDA); Intel → OpenVINO (iGPU/Arc/NPU),
+// when compiled in; anything else → faster-whisper on CPU (self-contained).
+// whisper.cpp (Vulkan) stays an explicit choice since it needs a running server.
 QString Controller::activeBackend() const {
     const QString b = QSettings().value(QStringLiteral("stt/backend"),
                                          QStringLiteral("auto")).toString();
     if (b != QLatin1String("auto"))
         return b;
-    const bool nvidia = QFileInfo::exists(QStringLiteral("/proc/driver/nvidia/version")) ||
-                        !QStandardPaths::findExecutable(QStringLiteral("nvidia-smi")).isEmpty();
-    return nvidia ? QStringLiteral("faster-whisper") : QStringLiteral("openvino");
+    const Gpus g = detectGpus();
+    if (g.nvidia)
+        return QStringLiteral("faster-whisper");
+#if SCRYBE_HAVE_OPENVINO
+    if (g.intel)
+        return QStringLiteral("openvino");
+#endif
+    return QStringLiteral("faster-whisper");   // CPU / AMD fallback
 }
 
 QString Controller::modelDirFor(const QString &key) const {
@@ -209,6 +263,13 @@ void Controller::setLlmEnabled(bool on) {
     emit llmEnabledChanged();
 }
 
+void Controller::setTheme(const QString &t) {
+    if (m_theme == t) return;
+    m_theme = t;
+    QSettings().setValue(QStringLiteral("ui/theme"), t);
+    emit themeChanged();
+}
+
 void Controller::setBeautifyStyle(const QString &s) {
     if (m_beautifyStyle == s) return;
     m_beautifyStyle = s;
@@ -269,6 +330,105 @@ QVariantList Controller::styleList() const {
 QStringList Controller::backendList() const {
     return {QStringLiteral("auto"), QStringLiteral("openvino"),
             QStringLiteral("faster-whisper"), QStringLiteral("whispercpp")};
+}
+
+QObject *Controller::updater() const { return m_updater; }
+
+QVariantMap Controller::hardwareInfo() const {
+    const Gpus g = detectGpus();
+    return QVariantMap{
+        {QStringLiteral("nvidia"), g.nvidia},
+        {QStringLiteral("intel"), g.intel},
+        {QStringLiteral("amd"), g.amd},
+        {QStringLiteral("gpus"), g.names.isEmpty()
+             ? QStringLiteral("No discrete/integrated GPU detected — CPU only")
+             : g.names.join(QStringLiteral(", "))},
+        {QStringLiteral("resolved"), activeBackend()},
+    };
+}
+
+// Per-backend availability for the settings "Hardware" pane.
+QVariantList Controller::backendInfo() {
+    const Gpus g = detectGpus();
+
+    // faster-whisper needs the Python package (CTranslate2). Cache the probe —
+    // it can take a moment and the pane may re-query.
+    if (m_fasterWhisperAvail < 0) {
+        // find_spec only checks presence — it does NOT import the (slow) module,
+        // so this stays snappy on the GUI thread.
+        QProcess p;
+        p.start(QStringLiteral("python3"),
+                {QStringLiteral("-c"),
+                 QStringLiteral("import importlib.util,sys;"
+                                "sys.exit(0 if importlib.util.find_spec('faster_whisper') else 1)")});
+        bool ok = p.waitForStarted(2000) && p.waitForFinished(4000) &&
+                  p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+        if (p.state() != QProcess::NotRunning) p.kill();
+        m_fasterWhisperAvail = ok ? 1 : 0;
+    }
+
+    QVariantList out;
+
+    // OpenVINO (Intel). "available" means it was compiled into this binary.
+    out.append(QVariantMap{
+        {QStringLiteral("key"), QStringLiteral("openvino")},
+        {QStringLiteral("label"), QStringLiteral("OpenVINO — Intel iGPU / Arc / NPU + CPU")},
+        {QStringLiteral("available"), bool(SCRYBE_HAVE_OPENVINO)},
+        {QStringLiteral("recommended"), g.intel && !g.nvidia},
+        {QStringLiteral("installable"), !bool(SCRYBE_HAVE_OPENVINO)},
+        {QStringLiteral("note"), bool(SCRYBE_HAVE_OPENVINO)
+             ? QStringLiteral("Installed and ready.")
+             : QStringLiteral("Not built in. Install to enable Intel GPU acceleration.")},
+    });
+
+    // faster-whisper (NVIDIA / CPU).
+    out.append(QVariantMap{
+        {QStringLiteral("key"), QStringLiteral("faster-whisper")},
+        {QStringLiteral("label"), QStringLiteral("faster-whisper — NVIDIA (CUDA) + CPU")},
+        {QStringLiteral("available"), m_fasterWhisperAvail == 1},
+        {QStringLiteral("recommended"), g.nvidia},
+        {QStringLiteral("installable"), true},
+        {QStringLiteral("note"), m_fasterWhisperAvail == 1
+             ? QStringLiteral("Installed and ready.")
+             : QStringLiteral("Python package not found. Install to enable.")},
+    });
+
+    // whisper.cpp (Vulkan / any GPU). Needs a server the user runs.
+    out.append(QVariantMap{
+        {QStringLiteral("key"), QStringLiteral("whispercpp")},
+        {QStringLiteral("label"), QStringLiteral("whisper.cpp — Vulkan / AMD / any GPU")},
+        {QStringLiteral("available"), false},
+        {QStringLiteral("recommended"), g.amd && !g.nvidia && !g.intel},
+        {QStringLiteral("installable"), true},
+        {QStringLiteral("note"),
+         QStringLiteral("Builds a local server (Vulkan). Best for AMD GPUs.")},
+    });
+
+    return out;
+}
+
+// Install a backend on demand by re-running the setup helper in a terminal so
+// the user can watch progress and answer sudo prompts. Invalidates caches.
+void Controller::installBackend(const QString &key) {
+    const QString src = QDir(QStandardPaths::writableLocation(
+                                 QStandardPaths::HomeLocation))
+                            .filePath(QStringLiteral(".local/src/scrybe"));
+    const QString helper = QDir(src).filePath(QStringLiteral("scripts/install-backend.sh"));
+
+    QString cmd;
+    if (QFileInfo::exists(helper))
+        cmd = QStringLiteral("bash %1 %2").arg(helper, key);
+    else
+        cmd = QStringLiteral(
+            "curl -fsSL https://raw.githubusercontent.com/mrelmida/scrybe/main/"
+            "scripts/install-backend.sh | bash -s -- %1").arg(key);
+
+    m_fasterWhisperAvail = -1;   // re-probe next time the pane opens
+    if (scrybe::launchTerminal(cmd))
+        emit notify(QStringLiteral("Installing '%1' in a terminal…").arg(key));
+    else
+        emit notify(QStringLiteral(
+            "No terminal found. Install '%1' via build-and-setup.sh.").arg(key));
 }
 
 QStringList Controller::presetNames() const {

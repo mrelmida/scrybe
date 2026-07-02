@@ -11,6 +11,7 @@ class AudioCapture;
 class SttEngine;
 class Paster;
 class LlmBeautifier;
+class Updater;
 class QTimer;
 
 // Central state machine driving the QML overlay.
@@ -31,6 +32,8 @@ class Controller : public QObject {
     Q_PROPERTY(QString language READ language WRITE setLanguage NOTIFY languageChanged)
     Q_PROPERTY(bool settingsOpen READ settingsOpen WRITE setSettingsOpen NOTIFY settingsOpenChanged)
     Q_PROPERTY(QString model READ model WRITE setModel NOTIFY modelChanged)
+    Q_PROPERTY(QString theme READ theme WRITE setTheme NOTIFY themeChanged)
+    Q_PROPERTY(QObject *updater READ updater CONSTANT)
 
 public:
     enum State { Idle, Listening, Transcribing, Beautifying, Pasting };
@@ -50,6 +53,8 @@ public:
     void setPreviewEnabled(bool on);
 
     QString model() const { return m_model; }
+    QString theme() const { return m_theme; }
+    void setTheme(const QString &t);
     QString beautifyStyle() const { return m_beautifyStyle; }
     void setBeautifyStyle(const QString &s);
     QString backend() const;
@@ -59,6 +64,8 @@ public:
     bool settingsOpen() const { return m_settingsOpen; }
     void setSettingsOpen(bool on);
 
+    QObject *updater() const;
+
     // Exposed to the settings UI.
     Q_INVOKABLE QVariantList modelList() const;   // [{key,label}]
     Q_INVOKABLE QVariantList styleList() const;    // builtins + custom presets
@@ -67,6 +74,11 @@ public:
     Q_INVOKABLE QString presetPrompt(const QString &name) const;
     Q_INVOKABLE void savePreset(const QString &name, const QString &prompt);
     Q_INVOKABLE void deletePreset(const QString &name);
+
+    // Hardware / backend management for the settings UI.
+    Q_INVOKABLE QVariantMap hardwareInfo() const;   // {nvidia,intel,amd,gpus,cpu}
+    Q_INVOKABLE QVariantList backendInfo();         // per-backend availability
+    Q_INVOKABLE void installBackend(const QString &key);   // runs helper in a terminal
 
 public slots:
     void toggle();
@@ -84,6 +96,7 @@ signals:
     void modelReadyChanged();
     void previewEnabledChanged();
     void beautifyStyleChanged();
+    void themeChanged();
     void backendChanged();
     void languageChanged();
     void settingsOpenChanged();
@@ -116,8 +129,10 @@ private:
     SttEngine *m_stt = nullptr;
     Paster *m_paster = nullptr;
     LlmBeautifier *m_llm = nullptr;
+    Updater *m_updater = nullptr;
     QString m_language = QStringLiteral("auto");
     QString m_model = QStringLiteral("small");
+    QString m_theme = QStringLiteral("oled");
     QString m_beautifyStyle = QStringLiteral("format");
     bool m_settingsOpen = false;
 
@@ -128,4 +143,5 @@ private:
     bool m_modelReady = false;
     bool m_modelLoading = false;
     bool m_previewEnabled = true;
+    int m_fasterWhisperAvail = -1;   // -1 unknown, 0 no, 1 yes (cached)
 };

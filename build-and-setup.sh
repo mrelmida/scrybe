@@ -56,6 +56,42 @@ pkg_install() {  # pkg_install <fatal|optional> <packages...>
     return $rc
 }
 
+# --- Detect GPUs so we only install backends that make sense ---------------- #
+# Reads PCI vendor ids from sysfs (no external tools): Intel=0x8086,
+# NVIDIA=0x10de, AMD=0x1002. Also checks the NVIDIA driver node.
+HAS_INTEL_GPU=0; HAS_NVIDIA=0; HAS_AMD=0
+[[ -e /proc/driver/nvidia/version ]] && HAS_NVIDIA=1
+command -v nvidia-smi >/dev/null 2>&1 && HAS_NVIDIA=1
+for v in /sys/class/drm/card[0-9]*/device/vendor; do
+    [[ -r "$v" ]] || continue
+    case "$(cat "$v" 2>/dev/null)" in
+        0x8086) HAS_INTEL_GPU=1 ;;
+        0x10de) HAS_NVIDIA=1 ;;
+        0x1002) HAS_AMD=1 ;;
+    esac
+done
+
+# Decide whether to install the OpenVINO (Intel) backend. Auto: only on Intel.
+# Force with SCRYBE_WITH_OPENVINO=1/ON, disable with =0/OFF.
+case "${SCRYBE_WITH_OPENVINO:-auto}" in
+    1|on|ON|yes|true)  WANT_OPENVINO=1 ;;
+    0|off|OFF|no|false) WANT_OPENVINO=0 ;;
+    *) WANT_OPENVINO=$HAS_INTEL_GPU ;;
+esac
+
+step "Detected hardware"
+gpus=(); [[ $HAS_NVIDIA -eq 1 ]] && gpus+=("NVIDIA")
+[[ $HAS_INTEL_GPU -eq 1 ]] && gpus+=("Intel"); [[ $HAS_AMD -eq 1 ]] && gpus+=("AMD")
+echo "     GPUs: ${gpus[*]:-none (CPU only)}"
+if [[ $WANT_OPENVINO -eq 1 ]]; then
+    ok "Will install the OpenVINO (Intel) backend."
+else
+    echo "     OpenVINO backend: skipped (no Intel GPU; set SCRYBE_WITH_OPENVINO=1 to force)."
+fi
+[[ $HAS_NVIDIA -eq 1 ]] && ok "Will install faster-whisper (NVIDIA/CUDA)."
+[[ $HAS_AMD -eq 1 && $HAS_NVIDIA -eq 0 && $HAS_INTEL_GPU -eq 0 ]] && \
+    echo "     AMD GPU: use the whisper.cpp (Vulkan) backend — scripts/install-backend.sh whispercpp"
+
 # ---------------------------------------------------------------------------- #
 # Phase 1 — system packages (build tools + Qt6 + KF6 + Wayland helpers)
 # ---------------------------------------------------------------------------- #
@@ -86,7 +122,7 @@ fi
 # Phase 2 — Intel iGPU compute runtime (OpenCL + Level Zero). Non-fatal:
 # OpenVINO falls back to CPU, and non-Intel machines use another backend.
 # ---------------------------------------------------------------------------- #
-if [[ -z "${SCRYBE_SKIP_GPU:-}" ]]; then
+if [[ -z "${SCRYBE_SKIP_GPU:-}" && $WANT_OPENVINO -eq 1 ]]; then
     step "Installing Intel GPU compute runtime (for the OpenVINO backend)"
     ok_gpu=1
     case "$PM" in
@@ -98,7 +134,7 @@ if [[ -z "${SCRYBE_SKIP_GPU:-}" ]]; then
     [[ $ok_gpu -eq 1 ]] && ok "Intel GPU runtime installed." \
         || warn "Intel GPU runtime not installed (fine on non-Intel machines)."
 else
-    warn "Skipping Intel GPU runtime (SCRYBE_SKIP_GPU set)."
+    warn "Skipping Intel GPU runtime (non-Intel machine or SCRYBE_SKIP_GPU set)."
 fi
 
 # ---------------------------------------------------------------------------- #
@@ -148,7 +184,7 @@ fi
 # app links these .so files directly — no Python runtime dependency.
 # Non-fatal: the build will stub STT until these are present (M3).
 # ---------------------------------------------------------------------------- #
-if [[ -z "${SCRYBE_SKIP_OPENVINO:-}" ]]; then
+if [[ -z "${SCRYBE_SKIP_OPENVINO:-}" && $WANT_OPENVINO -eq 1 ]]; then
     step "Installing OpenVINO GenAI C++ runtime to $OV_PREFIX"
     set +e
     tmp="$(mktemp -d)"
@@ -215,7 +251,7 @@ if [[ -z "${SCRYBE_SKIP_OPENVINO:-}" ]]; then
     rm -rf "$tmp"
     set -e
 else
-    warn "Skipping OpenVINO setup (SCRYBE_SKIP_OPENVINO set)."
+    warn "Skipping OpenVINO setup (non-Intel machine or SCRYBE_SKIP_OPENVINO set)."
 fi
 
 # ---------------------------------------------------------------------------- #
@@ -239,13 +275,15 @@ fi
 # Phase 5b — Whisper STT model. Non-fatal.
 # ---------------------------------------------------------------------------- #
 STT_MODEL="${SCRYBE_STT_MODEL:-small}"
-if [[ -z "${SCRYBE_SKIP_MODEL:-}" ]]; then
-    step "Downloading Whisper model '$STT_MODEL'"
+if [[ -z "${SCRYBE_SKIP_MODEL:-}" && $WANT_OPENVINO -eq 1 ]]; then
+    step "Downloading Whisper model '$STT_MODEL' (OpenVINO IR)"
     "$SCRIPT_DIR/scripts/download-model.sh" "$STT_MODEL" \
         && ok "Whisper model '$STT_MODEL' ready." \
         || warn "Model download failed — run scripts/download-model.sh later."
 else
-    warn "Skipping Whisper model download (SCRYBE_SKIP_MODEL set)."
+    # Other backends fetch their own models on first use (faster-whisper via
+    # CTranslate2, whisper.cpp from the server's model dir).
+    warn "Skipping OpenVINO model download (backend fetches its own model)."
 fi
 
 # ---------------------------------------------------------------------------- #
@@ -258,11 +296,13 @@ if [[ -z "${SCRYBE_SKIP_BACKENDS:-}" ]]; then
         "$HOME/.local/share/scrybe/backends/"
     ok "faster-whisper sidecar installed."
 
-    # Install faster-whisper (CUDA/CPU) if an NVIDIA GPU is present or requested.
-    if command -v nvidia-smi >/dev/null 2>&1 || [[ -n "${SCRYBE_WITH_FASTER_WHISPER:-}" ]]; then
+    # Install faster-whisper (CUDA/CPU) when it's the chosen/fallback backend:
+    # NVIDIA machines, or any machine where OpenVINO isn't being installed (the
+    # 'auto' backend then falls back to faster-whisper on CPU).
+    if [[ $HAS_NVIDIA -eq 1 || $WANT_OPENVINO -eq 0 || -n "${SCRYBE_WITH_FASTER_WHISPER:-}" ]]; then
         pip3 install --user -q faster-whisper \
             && ok "faster-whisper installed (CUDA/CPU)." \
-            || warn "faster-whisper install failed."
+            || warn "faster-whisper install failed (run: pip3 install --user faster-whisper)."
     else
         echo "     (faster-whisper skipped; set SCRYBE_WITH_FASTER_WHISPER=1 to install)"
     fi
@@ -292,8 +332,9 @@ if [[ -z "${SCRYBE_SKIP_BUILD:-}" ]]; then
     fi
     cmake_args=(-S "$SCRIPT_DIR" -B "$BUILD_DIR" -G Ninja
                 -DCMAKE_BUILD_TYPE=Release
-                -DCMAKE_INSTALL_PREFIX="$PREFIX")
-    if [[ -f "$CONFIG_DIR/openvino.env" ]]; then
+                -DCMAKE_INSTALL_PREFIX="$PREFIX"
+                -DSCRYBE_WITH_OPENVINO=$([[ $WANT_OPENVINO -eq 1 ]] && echo ON || echo OFF))
+    if [[ $WANT_OPENVINO -eq 1 && -f "$CONFIG_DIR/openvino.env" ]]; then
         # shellcheck source=/dev/null
         source "$CONFIG_DIR/openvino.env"
         [[ -n "${OpenVINO_DIR:-}"      ]] && cmake_args+=(-DOpenVINO_DIR="$OpenVINO_DIR")

@@ -13,11 +13,14 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMenu>
+#include <QPainter>
+#include <QPixmap>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QStyleHints>
 #include <QSystemTrayIcon>
 #include <QTimer>
 
@@ -141,6 +144,34 @@ int runTranscribeFile(int argc, char **argv, const QString &wav,
     });
     app.exec();
     return rc;
+}
+
+// Draw a crisp monochrome microphone glyph in the given colour. Used for the
+// tray icon so it can be recoloured to contrast with a light or dark panel.
+QIcon makeTrayIcon(const QColor &c) {
+    const int S = 64;
+    QPixmap pm(S, S);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    // Capsule body.
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    const QRectF body(S * 0.375, S * 0.16, S * 0.25, S * 0.40);
+    p.drawRoundedRect(body, body.width() / 2.0, body.width() / 2.0);
+
+    // U-shaped holder + stand + base.
+    QPen pen(c);
+    pen.setWidthF(S * 0.055);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(pen);
+    p.drawArc(QRectF(S * 0.28, S * 0.20, S * 0.44, S * 0.46), 190 * 16, 160 * 16);
+    p.drawLine(QPointF(S * 0.5, S * 0.66), QPointF(S * 0.5, S * 0.80));
+    p.drawLine(QPointF(S * 0.36, S * 0.81), QPointF(S * 0.64, S * 0.81));
+    p.end();
+    return QIcon(pm);
 }
 
 // Try to hand a command to an already-running instance.
@@ -282,8 +313,22 @@ int main(int argc, char **argv) {
         QStringLiteral("scrybe"),
         QIcon::fromTheme(QStringLiteral("audio-input-microphone")));
     app.setWindowIcon(appIcon);
-    QSystemTrayIcon tray(appIcon);
+
+    QSystemTrayIcon tray;
     tray.setToolTip(QStringLiteral("Scrybe — press the hotkey to dictate"));
+
+    // Monochrome tray icon that adapts to the panel: a dark desktop scheme gets
+    // a near-white glyph, a light scheme a near-black one, updated live when the
+    // system switches between light and dark.
+    auto refreshTrayIcon = [&tray, &app]() {
+        const bool dark =
+            app.styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+        tray.setIcon(makeTrayIcon(dark ? QColor(0xf4, 0xf5, 0xf7)
+                                       : QColor(0x1c, 0x1d, 0x22)));
+    };
+    refreshTrayIcon();
+    QObject::connect(app.styleHints(), &QStyleHints::colorSchemeChanged, &app,
+                     [refreshTrayIcon](Qt::ColorScheme) { refreshTrayIcon(); });
     QMenu menu;
     QAction *actToggle = menu.addAction(QStringLiteral("Start / Stop listening"));
     QObject::connect(actToggle, &QAction::triggered, &controller, &Controller::toggle);
@@ -311,6 +356,10 @@ int main(int argc, char **argv) {
                          [&controller, key = m.key]() { controller.setModel(key); });
     }
     menu.addSeparator();
+    QAction *actUpdate = menu.addAction(QStringLiteral("Check for updates…"));
+    QObject::connect(actUpdate, &QAction::triggered, &controller, [&controller]() {
+        QMetaObject::invokeMethod(controller.updater(), "check", Q_ARG(bool, false));
+    });
     QAction *actSettings = menu.addAction(QStringLiteral("Settings…"));
     QObject::connect(actSettings, &QAction::triggered, &controller,
                      [&controller]() { controller.setSettingsOpen(true); });
@@ -327,6 +376,11 @@ int main(int argc, char **argv) {
 
     if (toggleOnly)
         controller.toggle();
+
+    // Quietly check GitHub for a newer release a few seconds after launch.
+    QTimer::singleShot(5000, &controller, [&controller]() {
+        QMetaObject::invokeMethod(controller.updater(), "check", Q_ARG(bool, true));
+    });
 
     return app.exec();
 }
