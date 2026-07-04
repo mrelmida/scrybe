@@ -6,7 +6,39 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Widgets Network Multimedia)
+# SCRYBE_BUILD_APP=OFF builds only the core library + tests (used by CI on
+# runners without KDE/Wayland/multimedia dev packages).
+option(SCRYBE_BUILD_APP "Build the scrybe application" ON)
+include(CTest)
+
+find_package(Qt6 REQUIRED COMPONENTS Core)
+
+# Pure-logic core: no GUI/KDE dependencies, unit-testable anywhere.
+add_library(scrybe_core STATIC
+    src/util/Version.h
+    src/util/Version.cpp
+    src/util/Text.h
+    src/util/Text.cpp
+    src/util/Wav.h
+    src/util/Wav.cpp
+    src/stt/Resample.h
+    src/stt/Resample.cpp
+)
+target_include_directories(scrybe_core PUBLIC src)
+target_link_libraries(scrybe_core PUBLIC Qt6::Core)
+
+if(BUILD_TESTING)
+    find_package(Qt6 QUIET COMPONENTS Test)
+    if(Qt6Test_FOUND)
+        add_subdirectory(tests)
+    else()
+        message(STATUS "scrybe: Qt6Test not found — C++ tests skipped")
+    endif()
+endif()
+
+if(SCRYBE_BUILD_APP)
+
+find_package(Qt6 REQUIRED COMPONENTS Gui Qml Quick Widgets Network Multimedia)
 
 # M2: overlay anchoring (KWin/Wayland) + global hotkey registration.
 find_package(LayerShellQt REQUIRED)
@@ -93,6 +125,7 @@ qt_add_qml_module(scrybe
 )
 
 target_link_libraries(scrybe PRIVATE
+    scrybe_core
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Widgets Qt6::Network
     Qt6::Multimedia
     LayerShellQt::Interface
@@ -105,3 +138,5 @@ else()
                    "(non-Intel machine or GenAI C++ not installed) — "
                    "using faster-whisper / whisper.cpp")
 endif()
+
+endif() # SCRYBE_BUILD_APP

@@ -13,38 +13,18 @@
 #include <QTimer>
 #include <QUrl>
 
-#include <cstring>
+#include "util/Wav.h"
 
-namespace {
-// Encode 16 kHz mono float PCM as a 16-bit WAV blob for the server.
-QByteArray toWav(const std::vector<float> &pcm) {
-    const int rate = 16000, ch = 1, bits = 16;
-    const int dataBytes = int(pcm.size()) * 2;
-    QByteArray out;
-    auto put32 = [&](quint32 v) { out.append(reinterpret_cast<const char *>(&v), 4); };
-    auto put16 = [&](quint16 v) { out.append(reinterpret_cast<const char *>(&v), 2); };
-    out.append("RIFF"); put32(36 + dataBytes); out.append("WAVE");
-    out.append("fmt "); put32(16); put16(1); put16(ch);
-    put32(rate); put32(rate * ch * bits / 8); put16(ch * bits / 8); put16(bits);
-    out.append("data"); put32(dataBytes);
-    for (float f : pcm) {
-        int v = int(f * 32767.0f);
-        v = v < -32768 ? -32768 : (v > 32767 ? 32767 : v);
-        put16(quint16(qint16(v)));
-    }
-    return out;
-}
-} // namespace
+WhisperCppBackend::WhisperCppBackend() = default;
 
-WhisperCppBackend::WhisperCppBackend() {
+bool WhisperCppBackend::load(const QString &, const QString &,
+                             QString *effectiveDevice, QString *err) {
+    // Re-read the endpoint on every load so config changes apply without a
+    // restart (a backend instance can outlive many settings edits).
     m_endpoint = QSettings()
                      .value(QStringLiteral("whispercpp/endpoint"),
                             QStringLiteral("http://127.0.0.1:8080"))
                      .toString();
-}
-
-bool WhisperCppBackend::load(const QString &, const QString &,
-                             QString *effectiveDevice, QString *err) {
     // The server owns the model+device; just confirm it's reachable.
     QNetworkAccessManager nam;
     QNetworkRequest req{QUrl(m_endpoint)};
@@ -75,7 +55,7 @@ bool WhisperCppBackend::transcribe(const std::vector<float> &pcm16k,
     file.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("audio/wav"));
     file.setHeader(QNetworkRequest::ContentDispositionHeader,
                    QStringLiteral("form-data; name=\"file\"; filename=\"a.wav\""));
-    file.setBody(toWav(pcm16k));
+    file.setBody(scrybe::encodeWav16(pcm16k));
     multi->append(file);
 
     auto addField = [&](const QString &name, const QString &value) {

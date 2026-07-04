@@ -577,11 +577,21 @@ Window {
                     spacing: 16
                     property var hw: ({})
                     property var backends: []
-                    function refresh() { hw = controller.hardwareInfo(); backends = controller.backendInfo() }
-                    Component.onCompleted: refresh()
+                    // Availability probes run asynchronously; the list re-reads
+                    // itself when each probe finishes (backendProbesChanged).
+                    function refresh(force) {
+                        hw = controller.hardwareInfo()
+                        backends = controller.backendInfo()
+                        controller.probeBackends(force === true)
+                    }
+                    Component.onCompleted: refresh(false)
                     Connections {
                         target: win
-                        function onPaneChanged() { if (win.pane === 5) hwPane.refresh() }
+                        function onPaneChanged() { if (win.pane === 5) hwPane.refresh(false) }
+                    }
+                    Connections {
+                        target: controller
+                        function onBackendProbesChanged() { hwPane.backends = controller.backendInfo() }
                     }
                     Item { Layout.preferredHeight: 6 }
 
@@ -597,7 +607,7 @@ Window {
                                 Field { text: hwPane.hw.gpus ? hwPane.hw.gpus : "…" }
                                 Caption { text: "Active backend (auto-resolved): <b>" + (hwPane.hw.resolved ? hwPane.hw.resolved : "…") + "</b>" }
                             }
-                            Btn { text: "Rescan"; onClicked: hwPane.refresh() }
+                            Btn { text: "Rescan"; onClicked: hwPane.refresh(true) }
                         }
                     }
 

@@ -29,6 +29,7 @@ public slots:
 signals:
     void levelChanged(qreal level);   // 0..1, smoothed for display
     void error(const QString &message);
+    void limitReached();              // capture hit the safety cap (once per start)
 
 private:
     void onReadyRead();
@@ -39,4 +40,5 @@ private:
     QIODevice *m_io = nullptr;
     QVector<float> m_pcm;
     qreal m_displayLevel = 0.0;
+    bool m_limitNotified = false;
 };

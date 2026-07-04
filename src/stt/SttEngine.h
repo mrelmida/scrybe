@@ -5,6 +5,7 @@
 #include <QThread>
 #include <QVector>
 
+#include <atomic>
 #include <memory>
 
 class ISttBackend;
@@ -16,6 +17,10 @@ class SttWorker : public QObject {
 public:
     explicit SttWorker(QObject *parent = nullptr);
     ~SttWorker() override;
+
+    // Thread-safe: when set, queued *partial* requests are skipped so a stale
+    // preview job can't delay the final transcription behind it.
+    void setDropPartials(bool drop) { m_dropPartials.store(drop); }
 
 public slots:
     void doLoad(const QString &backend, const QString &model, const QString &device);
@@ -32,6 +37,7 @@ signals:
 private:
     std::unique_ptr<ISttBackend> m_backend;
     QString m_backendType;
+    std::atomic<bool> m_dropPartials{false};
 };
 
 // GUI-thread facade. Public methods marshal to the worker via queued signals;
@@ -48,6 +54,9 @@ public:
     void unload();
     void transcribe(const QVector<float> &pcm, int sampleRate,
                     const QString &language, bool isFinal);
+
+    // Skip queued partial (preview) requests; finals are never dropped.
+    void setDropPartials(bool drop);
 
 signals:
     void ready(const QString &device);

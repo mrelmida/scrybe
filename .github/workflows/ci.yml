@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Core-library unit tests — no KDE/Wayland deps needed, runs anywhere Qt6 does.
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ qt6-base-dev libgl1-mesa-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DSCRYBE_BUILD_APP=OFF -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -E sidecar_protocol
+
+  # Sidecar stdin/stdout protocol test (pure Python).
+  sidecar-protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
+      - run: python3 tests/test_sidecar.py scripts/faster_whisper_sidecar.py
+
+  # Full application build on Fedora (the primary target distro), including
+  # the KF6/LayerShellQt/Multimedia stack. OpenVINO stays off in CI.
+  build-fedora:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            cmake ninja-build gcc-c++ \
+            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel \
+            kf6-kglobalaccel-devel layer-shell-qt-devel
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCRYBE_WITH_OPENVINO=OFF -DBUILD_TESTING=OFF
+      - name: Build
+        run: cmake --build build

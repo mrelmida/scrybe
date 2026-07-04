@@ -1,5 +1,7 @@
 #include "LlmBeautifier.h"
 
+#include "util/Text.h"
+
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -49,24 +51,10 @@ Style styleFor(const QString &style) {
         0.1};
 }
 
-// Strip a wrapping pair of quotes the model sometimes adds.
-QString unquote(QString s) {
-    s = s.trimmed();
-    if (s.size() >= 2 &&
-        ((s.front() == '"' && s.back() == '"') ||
-         (s.front() == '\'' && s.back() == '\'')))
-        s = s.mid(1, s.size() - 2).trimmed();
-    return s;
-}
 } // namespace
 
 LlmBeautifier::LlmBeautifier(QObject *parent) : QObject(parent) {
     m_nam = new QNetworkAccessManager(this);
-    QSettings s;
-    m_endpoint = s.value(QStringLiteral("llm/endpoint"),
-                         QStringLiteral("http://localhost:11434")).toString();
-    m_model = s.value(QStringLiteral("llm/model"),
-                      QStringLiteral("qwen2.5:1.5b")).toString();
 }
 
 void LlmBeautifier::beautify(const QString &text, const QString &style) {
@@ -75,9 +63,16 @@ void LlmBeautifier::beautify(const QString &text, const QString &style) {
         return;
     }
 
+    // Read the endpoint/model per request so settings edits apply immediately.
+    QSettings cfg;
+    const QString endpoint = cfg.value(QStringLiteral("llm/endpoint"),
+                                       QStringLiteral("http://localhost:11434")).toString();
+    const QString model = cfg.value(QStringLiteral("llm/model"),
+                                    QStringLiteral("qwen2.5:1.5b")).toString();
+
     const Style s = styleFor(style);
     QJsonObject body{
-        {QStringLiteral("model"), m_model},
+        {QStringLiteral("model"), model},
         {QStringLiteral("system"), s.system + QString::fromLatin1(kGuard)},
         {QStringLiteral("prompt"),
          QStringLiteral("Input: ") + text + QStringLiteral("\nOutput:")},
@@ -85,7 +80,7 @@ void LlmBeautifier::beautify(const QString &text, const QString &style) {
         {QStringLiteral("options"), QJsonObject{{QStringLiteral("temperature"), s.temp}}},
     };
 
-    QNetworkRequest req(QUrl(m_endpoint + QStringLiteral("/api/generate")));
+    QNetworkRequest req(QUrl(endpoint + QStringLiteral("/api/generate")));
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     req.setTransferTimeout(20000);
 
@@ -101,7 +96,8 @@ void LlmBeautifier::beautify(const QString &text, const QString &style) {
         }
         const QJsonObject obj =
             QJsonDocument::fromJson(reply->readAll()).object();
-        const QString out = unquote(obj.value(QStringLiteral("response")).toString());
+        const QString out =
+            scrybe::unquote(obj.value(QStringLiteral("response")).toString());
         if (out.isEmpty())
             emit failed(QStringLiteral("Ollama returned an empty response."));
         else

@@ -101,14 +101,17 @@ bool FasterWhisperBackend::transcribe(const std::vector<float> &pcm16k,
         *err = QStringLiteral("faster-whisper sidecar is not running.");
         return false;
     }
+    // Header line with the payload size, then the raw float32 samples (avoids
+    // the +33% base64 overhead and an extra copy on both sides).
     const QByteArray raw(reinterpret_cast<const char *>(pcm16k.data()),
                          int(pcm16k.size() * sizeof(float)));
     const QJsonObject req{
-        {QStringLiteral("audio_b64"), QString::fromLatin1(raw.toBase64())},
+        {QStringLiteral("n_bytes"), int(raw.size())},
         {QStringLiteral("language"), language.isEmpty() ? QStringLiteral("auto")
                                                         : language},
     };
     m_proc->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + '\n');
+    m_proc->write(raw);
     m_proc->waitForBytesWritten(5000);
 
     const QString line = readLine(120000, err);

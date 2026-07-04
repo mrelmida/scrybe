@@ -11,10 +11,14 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QUrl>
 
 #ifndef SCRYBE_HAVE_OPENVINO
 #define SCRYBE_HAVE_OPENVINO 0
@@ -24,6 +28,12 @@ namespace {
 constexpr int kPartialIntervalMs = 900;   // how often to refresh live text
 constexpr double kMinPartialSecs = 0.5;   // don't transcribe less than this
 constexpr int kUnloadIdleMs = 20000;      // unload model after 20s idle
+constexpr int kPartialWindowSecs = 25;    // preview transcribes at most this much
+
+// Marker written after a model download completes. `snapshot_download` creates
+// the directory before it finishes, so the directory alone doesn't prove the
+// files are all there (an interrupted download would look "installed" forever).
+constexpr char kCompleteMarker[] = ".complete";
 
 QString modelsRoot() {
     // ~/.local/share/scrybe/models  (matches scripts/download-model.sh)
@@ -72,6 +82,10 @@ Controller::Controller(QObject *parent) : QObject(parent) {
     connect(m_audio, &AudioCapture::levelChanged, this, &Controller::setLevel);
     connect(m_audio, &AudioCapture::error, this,
             [this](const QString &msg) { emit notify(msg); });
+    connect(m_audio, &AudioCapture::limitReached, this, [this]() {
+        emit notify(tr("Recording limit reached — finalizing."));
+        stopListening();
+    });
 
     m_stt = new SttEngine(this);
     connect(m_stt, &SttEngine::transcript, this,
@@ -90,7 +104,7 @@ Controller::Controller(QObject *parent) : QObject(parent) {
         m_modelReady = true;
         m_modelLoading = false;
         emit modelReadyChanged();
-        emit notify(QStringLiteral("Speech model ready (%1).").arg(dev));
+        emit notify(tr("Speech model ready (%1).").arg(dev));
     });
 
     m_paster = new Paster(this);
@@ -109,7 +123,7 @@ Controller::Controller(QObject *parent) : QObject(parent) {
     });
     connect(m_llm, &LlmBeautifier::failed, this, [this](const QString &msg) {
         if (m_state != Beautifying || m_cancelled) return;
-        emit notify(msg + QStringLiteral(" — pasting raw text."));
+        emit notify(msg + tr(" — pasting raw text."));
         finish();   // m_transcript still holds the raw text
     });
 
@@ -169,27 +183,51 @@ QString Controller::modelDirFor(const QString &key) const {
 }
 
 // Ensure the model files exist on disk (downloading in the background if not),
-// then invoke cb(success). cb runs immediately if already present.
+// then invoke cb(success). cb runs immediately if already present. A directory
+// without the completion marker is a previously interrupted download; the
+// snapshot download resumes it.
 void Controller::ensureDownloaded(const QString &key, std::function<void(bool)> cb) {
     const QString dir = modelDirFor(key);
-    if (QFileInfo::exists(dir)) {
+    const QString marker = QDir(dir).filePath(QString::fromLatin1(kCompleteMarker));
+    if (QFileInfo::exists(marker)) {
         cb(true);
         return;
     }
-    emit notify(QStringLiteral("Downloading model '%1'…").arg(key));
+    // Pre-marker installs: a dir that already holds the IR files is complete —
+    // adopt it rather than forcing a re-download (which would fail offline).
+    const QDir d(dir);
+    if (d.exists() &&
+        !d.entryList({QStringLiteral("*.xml")}, QDir::Files).isEmpty() &&
+        !d.entryList({QStringLiteral("*.bin")}, QDir::Files).isEmpty()) {
+        QFile f(marker);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(QByteArray("adopted existing download\n"));
+        cb(true);
+        return;
+    }
+    emit notify(tr("Downloading model '%1'…").arg(key));
     auto *p = new QProcess(this);
     p->setProgram(QStringLiteral("python3"));
+    // Repo and path travel as argv, not interpolated into the code string.
     p->setArguments({QStringLiteral("-c"),
-        QStringLiteral("from huggingface_hub import snapshot_download;"
-                       "snapshot_download(repo_id='%1', local_dir='%2',"
-                       "allow_patterns=['*.xml','*.bin','*.json','*.txt'])")
-            .arg(scrybe::modelRepo(key), dir)});
+        QStringLiteral("import sys\n"
+                       "from huggingface_hub import snapshot_download\n"
+                       "snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2],"
+                       "allow_patterns=['*.xml','*.bin','*.json','*.txt'])"),
+        scrybe::modelRepo(key), dir});
     connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, p, dir, key, cb](int code, QProcess::ExitStatus) {
+            this, [this, p, dir, marker, key, cb](int code, QProcess::ExitStatus st) {
                 p->deleteLater();
-                const bool ok = (code == 0 && QFileInfo::exists(dir));
-                if (ok) emit notify(QStringLiteral("Model '%1' downloaded.").arg(key));
-                else    emit notify(QStringLiteral("Download failed for '%1'.").arg(key));
+                const bool ok = (st == QProcess::NormalExit && code == 0 &&
+                                 QFileInfo::exists(dir));
+                if (ok) {
+                    QFile f(marker);
+                    if (f.open(QIODevice::WriteOnly))
+                        f.write(QByteArray("downloaded by scrybe\n"));
+                    emit notify(tr("Model '%1' downloaded.").arg(key));
+                } else {
+                    emit notify(tr("Download failed for '%1'.").arg(key));
+                }
                 cb(ok);
             });
     p->start();
@@ -233,7 +271,7 @@ void Controller::setModel(const QString &key) {
     m_modelLoading = false;
     emit modelReadyChanged();
     emit modelChanged();
-    emit notify(QStringLiteral("Model set to '%1' (loads on next recording).").arg(key));
+    emit notify(tr("Model set to '%1' (loads on next recording).").arg(key));
     if (activeBackend() == QLatin1String("openvino"))
         ensureDownloaded(key, [](bool) {});   // pre-fetch OpenVINO IR
 }
@@ -296,7 +334,7 @@ void Controller::setBackend(const QString &b) {
     m_modelLoading = false;
     emit modelReadyChanged();
     emit backendChanged();
-    emit notify(QStringLiteral("Backend set to '%1' (applies on next recording).").arg(b));
+    emit notify(tr("Backend set to '%1' (applies on next recording).").arg(b));
 }
 
 QString Controller::language() const { return m_language; }
@@ -347,25 +385,10 @@ QVariantMap Controller::hardwareInfo() const {
     };
 }
 
-// Per-backend availability for the settings "Hardware" pane.
+// Per-backend availability for the settings "Hardware" pane. Purely reads the
+// cached probe results — call probeBackends() to refresh them asynchronously.
 QVariantList Controller::backendInfo() {
     const Gpus g = detectGpus();
-
-    // faster-whisper needs the Python package (CTranslate2). Cache the probe —
-    // it can take a moment and the pane may re-query.
-    if (m_fasterWhisperAvail < 0) {
-        // find_spec only checks presence — it does NOT import the (slow) module,
-        // so this stays snappy on the GUI thread.
-        QProcess p;
-        p.start(QStringLiteral("python3"),
-                {QStringLiteral("-c"),
-                 QStringLiteral("import importlib.util,sys;"
-                                "sys.exit(0 if importlib.util.find_spec('faster_whisper') else 1)")});
-        bool ok = p.waitForStarted(2000) && p.waitForFinished(4000) &&
-                  p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
-        if (p.state() != QProcess::NotRunning) p.kill();
-        m_fasterWhisperAvail = ok ? 1 : 0;
-    }
 
     QVariantList out;
 
@@ -377,34 +400,96 @@ QVariantList Controller::backendInfo() {
         {QStringLiteral("recommended"), g.intel && !g.nvidia},
         {QStringLiteral("installable"), !bool(SCRYBE_HAVE_OPENVINO)},
         {QStringLiteral("note"), bool(SCRYBE_HAVE_OPENVINO)
-             ? QStringLiteral("Installed and ready.")
-             : QStringLiteral("Not built in. Install to enable Intel GPU acceleration.")},
+             ? tr("Installed and ready.")
+             : tr("Not built in. Install to enable Intel GPU acceleration.")},
     });
 
-    // faster-whisper (NVIDIA / CPU).
+    // faster-whisper (NVIDIA / CPU): needs the Python package (CTranslate2).
     out.append(QVariantMap{
         {QStringLiteral("key"), QStringLiteral("faster-whisper")},
         {QStringLiteral("label"), QStringLiteral("faster-whisper — NVIDIA (CUDA) + CPU")},
         {QStringLiteral("available"), m_fasterWhisperAvail == 1},
         {QStringLiteral("recommended"), g.nvidia},
         {QStringLiteral("installable"), true},
-        {QStringLiteral("note"), m_fasterWhisperAvail == 1
-             ? QStringLiteral("Installed and ready.")
-             : QStringLiteral("Python package not found. Install to enable.")},
+        {QStringLiteral("note"),
+         m_fasterWhisperAvail == 1 ? tr("Installed and ready.")
+         : m_fasterWhisperAvail < 0 ? tr("Checking…")
+                                    : tr("Python package not found. Install to enable.")},
     });
 
     // whisper.cpp (Vulkan / any GPU). Needs a server the user runs.
     out.append(QVariantMap{
         {QStringLiteral("key"), QStringLiteral("whispercpp")},
         {QStringLiteral("label"), QStringLiteral("whisper.cpp — Vulkan / AMD / any GPU")},
-        {QStringLiteral("available"), false},
+        {QStringLiteral("available"), m_whisperCppAvail == 1},
         {QStringLiteral("recommended"), g.amd && !g.nvidia && !g.intel},
         {QStringLiteral("installable"), true},
         {QStringLiteral("note"),
-         QStringLiteral("Builds a local server (Vulkan). Best for AMD GPUs.")},
+         m_whisperCppAvail == 1 ? tr("whisper-server is running and reachable.")
+         : m_whisperCppAvail < 0 ? tr("Checking…")
+                                 : tr("Builds a local server (Vulkan). Best for AMD GPUs.")},
     });
 
     return out;
+}
+
+// Kick off the availability probes that would block the GUI if run inline
+// (python interpreter start-up, HTTP reachability). Results land in the caches
+// and each completion emits backendProbesChanged().
+void Controller::probeBackends(bool force) {
+    if (force) {
+        if (!m_probingPython)     m_fasterWhisperAvail = -1;
+        if (!m_probingWhisperCpp) m_whisperCppAvail = -1;
+    }
+
+    // faster-whisper: find_spec only checks presence — it does NOT import the
+    // (slow) module — but even starting python3 can stall, hence async.
+    if (m_fasterWhisperAvail < 0 && !m_probingPython) {
+        m_probingPython = true;
+        auto *p = new QProcess(this);
+        connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this, p](int code, QProcess::ExitStatus st) {
+                    p->deleteLater();
+                    m_probingPython = false;
+                    m_fasterWhisperAvail =
+                        (st == QProcess::NormalExit && code == 0) ? 1 : 0;
+                    emit backendProbesChanged();
+                });
+        connect(p, &QProcess::errorOccurred, this,
+                [this, p](QProcess::ProcessError e) {
+                    if (e != QProcess::FailedToStart)
+                        return;
+                    p->deleteLater();
+                    m_probingPython = false;
+                    m_fasterWhisperAvail = 0;
+                    emit backendProbesChanged();
+                });
+        p->start(QStringLiteral("python3"),
+                 {QStringLiteral("-c"),
+                  QStringLiteral("import importlib.util,sys;"
+                                 "sys.exit(0 if importlib.util.find_spec('faster_whisper') else 1)")});
+    }
+
+    // whisper.cpp: reachable server at the configured endpoint.
+    if (m_whisperCppAvail < 0 && !m_probingWhisperCpp) {
+        m_probingWhisperCpp = true;
+        if (!m_probeNam)
+            m_probeNam = new QNetworkAccessManager(this);
+        const QString endpoint = QSettings()
+            .value(QStringLiteral("whispercpp/endpoint"),
+                   QStringLiteral("http://127.0.0.1:8080")).toString();
+        QNetworkRequest req{QUrl(endpoint)};
+        req.setTransferTimeout(2000);
+        QNetworkReply *reply = m_probeNam->get(req);
+        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            reply->deleteLater();
+            m_probingWhisperCpp = false;
+            m_whisperCppAvail =
+                (reply->error() == QNetworkReply::NoError ||
+                 reply->error() == QNetworkReply::ContentNotFoundError) ? 1 : 0;
+            emit backendProbesChanged();
+        });
+    }
 }
 
 // Install a backend on demand by re-running the setup helper in a terminal so
@@ -424,11 +509,11 @@ void Controller::installBackend(const QString &key) {
             "scripts/install-backend.sh | bash -s -- %1").arg(key);
 
     m_fasterWhisperAvail = -1;   // re-probe next time the pane opens
+    m_whisperCppAvail = -1;
     if (scrybe::launchTerminal(cmd))
-        emit notify(QStringLiteral("Installing '%1' in a terminal…").arg(key));
+        emit notify(tr("Installing '%1' in a terminal…").arg(key));
     else
-        emit notify(QStringLiteral(
-            "No terminal found. Install '%1' via build-and-setup.sh.").arg(key));
+        emit notify(tr("No terminal found. Install '%1' via build-and-setup.sh.").arg(key));
 }
 
 QStringList Controller::presetNames() const {
@@ -464,6 +549,8 @@ void Controller::startListening() {
     if (m_state != Idle) return;
     m_cancelled = false;
     m_sttBusy = false;
+    m_partialTruncated = false;
+    m_stt->setDropPartials(false);
     m_unloadTimer->stop();
     setTranscript(QString());
     setState(Listening);
@@ -479,23 +566,29 @@ void Controller::requestPartial() {
     if (m_state != Listening || m_sttBusy || !m_previewEnabled)
         return;
     const int rate = m_audio->sampleRate();
-    const QVector<float> pcm = m_audio->pcm();
+    const QVector<float> &pcm = m_audio->pcm();
     if (rate <= 0 || pcm.size() < int(kMinPartialSecs * rate))
         return;
+    // Long dictations: preview only the most recent window so the per-tick cost
+    // stays bounded (the final pass at stop still uses the full buffer).
+    const qsizetype maxSamples = qsizetype(kPartialWindowSecs) * rate;
+    m_partialTruncated = pcm.size() > maxSamples;
     m_sttBusy = true;
-    m_stt->transcribe(pcm, rate, m_language, /*isFinal=*/false);
+    m_stt->transcribe(m_partialTruncated ? pcm.mid(pcm.size() - maxSamples) : pcm,
+                      rate, m_language, /*isFinal=*/false);
 }
 
 void Controller::stopListening() {
     if (m_state != Listening) return;
     m_partialTimer->stop();
+    m_stt->setDropPartials(true);   // a queued preview must not delay the final
     m_audio->stop();
     setLevel(0.0);
 
     const QVector<float> pcm = m_audio->pcm();
     const int rate = m_audio->sampleRate();
     if (rate > 0 && pcm.size() < rate / 4) {   // < 0.25s captured
-        emit notify(QStringLiteral("Too short — nothing captured."));
+        emit notify(tr("Too short — nothing captured."));
         setState(Idle);
         emit requestHide();
         scheduleUnload();
@@ -516,6 +609,7 @@ void Controller::cancel() {
     if (m_state == Idle)
         return;
     m_partialTimer->stop();
+    m_stt->setDropPartials(true);
     m_audio->stop();
     m_cancelled = true;   // ignore any in-flight STT result
     setLevel(0.0);
@@ -532,15 +626,16 @@ void Controller::onTranscript(const QString &text, bool isFinal) {
 
     if (!isFinal) {
         // Live partial: only update while still listening, and never blank out.
+        // A leading ellipsis marks a preview that covers only the recent window.
         if (m_state == Listening && !text.isEmpty())
-            setTranscript(text);
+            setTranscript(m_partialTruncated ? QStringLiteral("… ") + text : text);
         return;
     }
 
     if (m_state != Transcribing)
         return;
     if (text.isEmpty()) {
-        emit notify(QStringLiteral("No speech recognized."));
+        emit notify(tr("No speech recognized."));
         setState(Idle);
         emit requestHide();
         scheduleUnload();

@@ -22,6 +22,4 @@ signals:
 
 private:
     QNetworkAccessManager *m_nam = nullptr;
-    QString m_endpoint;
-    QString m_model;
 };

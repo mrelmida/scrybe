@@ -12,6 +12,7 @@ class SttEngine;
 class Paster;
 class LlmBeautifier;
 class Updater;
+class QNetworkAccessManager;
 class QTimer;
 
 // Central state machine driving the QML overlay.
@@ -77,7 +78,8 @@ public:
 
     // Hardware / backend management for the settings UI.
     Q_INVOKABLE QVariantMap hardwareInfo() const;   // {nvidia,intel,amd,gpus,cpu}
-    Q_INVOKABLE QVariantList backendInfo();         // per-backend availability
+    Q_INVOKABLE QVariantList backendInfo();         // per-backend availability (cached)
+    Q_INVOKABLE void probeBackends(bool force = false);   // async; emits backendProbesChanged
     Q_INVOKABLE void installBackend(const QString &key);   // runs helper in a terminal
 
 public slots:
@@ -105,6 +107,7 @@ signals:
     void requestShow();
     void requestHide();
     void notify(const QString &message);   // non-fatal user-facing messages
+    void backendProbesChanged();           // an async availability probe finished
 
 private:
     void setState(State s);
@@ -143,5 +146,12 @@ private:
     bool m_modelReady = false;
     bool m_modelLoading = false;
     bool m_previewEnabled = true;
+    bool m_partialTruncated = false;   // preview covered only the tail window
+
+    // Async backend availability probes (settings "Hardware" pane).
+    QNetworkAccessManager *m_probeNam = nullptr;
     int m_fasterWhisperAvail = -1;   // -1 unknown, 0 no, 1 yes (cached)
+    int m_whisperCppAvail = -1;      // -1 unknown, 0 no, 1 yes (cached)
+    bool m_probingPython = false;
+    bool m_probingWhisperCpp = false;
 };

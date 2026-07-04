@@ -1,11 +1,11 @@
 #include "Updater.h"
 
 #include "util/Terminal.h"
+#include "util/Version.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QRegularExpression>
 #include <QSettings>
 #include <QUrl>
 
@@ -16,36 +16,6 @@ constexpr char kDefaultVersionUrl[] =
     "https://raw.githubusercontent.com/mrelmida/scrybe/main/VERSION";
 constexpr char kDefaultInstallUrl[] =
     "https://raw.githubusercontent.com/mrelmida/scrybe/main/install.sh";
-
-// Parse "1.4.10" → {1,4,10}; ignores a leading 'v' and any trailing suffix.
-QVector<int> parseVersion(QString v) {
-    v = v.trimmed();
-    if (v.startsWith(QLatin1Char('v')) || v.startsWith(QLatin1Char('V')))
-        v = v.mid(1);
-    QVector<int> parts;
-    const auto segs = v.split(QLatin1Char('.'));
-    for (const QString &s : segs) {
-        static const QRegularExpression re(QStringLiteral("^(\\d+)"));
-        const auto m = re.match(s);
-        parts.append(m.hasMatch() ? m.captured(1).toInt() : 0);
-    }
-    return parts;
-}
-
-// Returns true if `latest` is strictly newer than `current`.
-bool isNewer(const QString &latest, const QString &current) {
-    const QVector<int> a = parseVersion(latest);
-    const QVector<int> b = parseVersion(current);
-    const int n = qMax(a.size(), b.size());
-    for (int i = 0; i < n; ++i) {
-        const int ai = i < a.size() ? a[i] : 0;
-        const int bi = i < b.size() ? b[i] : 0;
-        if (ai != bi)
-            return ai > bi;
-    }
-    return false;
-}
-
 } // namespace
 
 Updater::Updater(QObject *parent) : QObject(parent) {
@@ -93,7 +63,7 @@ void Updater::check(bool silent) {
             return;
         }
         m_latest = latest;
-        m_updateAvailable = isNewer(latest, m_current);
+        m_updateAvailable = scrybe::isNewerVersion(latest, m_current);
         if (m_updateAvailable) {
             setStatus(QStringLiteral("Update available: %1 → %2").arg(m_current, latest));
             emit notify(QStringLiteral("Scrybe %1 is available (you have %2).")
@@ -111,19 +81,30 @@ void Updater::installUpdate() {
     const QString installUrl = QSettings()
         .value(QStringLiteral("update/installUrl"),
                QString::fromLatin1(kDefaultInstallUrl)).toString();
-    // Prefer a local checkout if present, otherwise curl the online installer.
+    // Prefer a local checkout if present. Otherwise download the installer to a
+    // temp file first (never `curl | bash`: a dropped connection can't execute a
+    // half-downloaded script) and verify its SHA-256 when a companion
+    // `install.sh.sha256` is published alongside it.
     const QString shellCmd = QStringLiteral(
         "set -e; echo 'Updating Scrybe…'; "
         "if [ -f \"$HOME/.local/src/scrybe/install.sh\" ]; then "
         "  bash \"$HOME/.local/src/scrybe/install.sh\"; "
-        "else curl -fsSL '%1' | bash; fi; "
+        "else "
+        "  tmp=$(mktemp /tmp/scrybe-install.XXXXXX.sh); trap 'rm -f \"$tmp\"' EXIT; "
+        "  curl -fsSL '%1' -o \"$tmp\"; "
+        "  if sum=$(curl -fsSL '%1.sha256' 2>/dev/null) && [ -n \"$sum\" ]; then "
+        "    echo \"${sum%% *}  $tmp\" | sha256sum -c - "
+        "      || { echo 'Installer checksum mismatch — aborting.'; exit 1; }; "
+        "  else echo 'No published checksum; continuing without verification.'; fi; "
+        "  bash \"$tmp\"; "
+        "fi; "
         "echo; echo 'Update finished. Restart Scrybe to run the new version.'")
         .arg(installUrl);
 
     if (!scrybe::launchTerminal(shellCmd)) {
-        emit notify(QStringLiteral(
-            "No terminal found. Update manually: curl -fsSL %1 | bash").arg(installUrl));
+        emit notify(tr("No terminal found. Update manually by downloading and "
+                       "running %1").arg(installUrl));
         return;
     }
-    emit notify(QStringLiteral("Updating Scrybe in a terminal…"));
+    emit notify(tr("Updating Scrybe in a terminal…"));
 }

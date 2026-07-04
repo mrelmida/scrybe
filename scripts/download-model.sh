@@ -32,4 +32,8 @@ snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2],
 print("done")
 PY
 
+# Completion marker: the app treats a directory without it as an interrupted
+# download and resumes it (keep in sync with Controller::ensureDownloaded).
+touch "$DIR/.complete"
+
 echo "Model ready: $DIR"

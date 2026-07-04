@@ -1,35 +1,11 @@
 #include "SttEngine.h"
 
+#include "Resample.h"
 #include "SttBackend.h"
 
 #include <QtGlobal>
 
-#include <cmath>
 #include <vector>
-
-namespace {
-// Linear resample to 16 kHz mono float (Whisper's required input rate).
-std::vector<float> toWhisperInput(const QVector<float> &pcm, int srcRate) {
-    std::vector<float> out;
-    if (pcm.isEmpty())
-        return out;
-    if (srcRate == 16000 || srcRate <= 0) {
-        out.assign(pcm.begin(), pcm.end());
-        return out;
-    }
-    const double ratio = 16000.0 / double(srcRate);
-    const auto dstN = qint64(pcm.size() * ratio);
-    out.reserve(dstN);
-    for (qint64 i = 0; i < dstN; ++i) {
-        const double srcPos = i / ratio;
-        const auto i0 = qint64(srcPos);
-        const auto i1 = qMin<qint64>(i0 + 1, pcm.size() - 1);
-        const double frac = srcPos - i0;
-        out.push_back(float(pcm[i0] * (1.0 - frac) + pcm[i1] * frac));
-    }
-    return out;
-}
-} // namespace
 
 // ---------------------------------------------------------------------------- //
 // SttWorker (runs on the worker thread)
@@ -63,12 +39,14 @@ void SttWorker::doUnload() {
 
 void SttWorker::doTranscribe(const QVector<float> &pcm, int sampleRate,
                              const QString &language, bool isFinal) {
+    if (!isFinal && m_dropPartials.load())
+        return;   // stale preview request — the recording already stopped
     if (!m_backend) {
         if (isFinal)
             emit failed(QStringLiteral("STT backend is not loaded yet."));
         return;
     }
-    std::vector<float> audio = toWhisperInput(pcm, sampleRate);
+    std::vector<float> audio = scrybe::resampleTo16k(pcm, sampleRate);
     if (audio.empty()) {
         emit result(QString(), QString(), isFinal);
         return;
@@ -126,4 +104,8 @@ void SttEngine::unload() {
 void SttEngine::transcribe(const QVector<float> &pcm, int sampleRate,
                            const QString &language, bool isFinal) {
     emit requestTranscribe(pcm, sampleRate, language, isFinal);
+}
+
+void SttEngine::setDropPartials(bool drop) {
+    m_worker->setDropPartials(drop);   // atomic; safe to call cross-thread
 }

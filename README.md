@@ -90,9 +90,12 @@ Settings live in `~/.config/scrybe/scrybe.conf` and most are exposed in the tray
 | `ui/preview` | `true`·`false` | `true` | live transcription preview |
 | `island/position` | `top`·`bottom` | `top` | overlay anchor |
 | `paste/restoreClipboard` | `true`·`false` | `true` | restore clipboard after paste |
+| `paste/restoreDelayMs` | ms | `1000` | grace period before restoring the clipboard |
+| `paste/shortcut` | `ctrl+v`·`ctrl+shift+v` | `ctrl+v` | paste shortcut (`ctrl+shift+v` for terminals) |
 | `llm/model` | Ollama model | `qwen2.5:1.5b` | cleanup model |
 | `whispercpp/endpoint` | URL | `http://127.0.0.1:8080` | whisper-server endpoint |
 | `update/versionUrl` | URL | GitHub `VERSION` | where to check for updates |
+| `update/autoCheck` | `true`·`false` | `true` | check for updates on launch |
 
 ```bash
 kwriteconfig6 --file ~/.config/scrybe/scrybe.conf --group stt --key model turbo
@@ -197,7 +200,7 @@ scripts/uninstall.sh --purge    # also remove models, config, and OpenVINO
 
 - **Paste doesn't work** — ensure `ydotoold` is running and you're in the
   `input` group (the installer configures this; **log out/in once** after the
-  first install). Terminals use Ctrl+Shift+V, which isn't supported yet.
+  first install). For terminals, set `paste/shortcut` to `ctrl+shift+v`.
 - **Hotkey does nothing** — check *System Settings → Shortcuts → Scrybe*.
 - **First dictation shows "Loading speech model…"** — normal; the model loads on
   demand and is cached afterward.
@@ -218,13 +221,24 @@ scrybe (C++/Qt6 daemon)
 Global hotkeys use KDE's KGlobalAccel; the overlay is a Wayland layer-shell
 surface that returns focus to your app for pasting.
 
+## Tests
+
+```bash
+cmake -S . -B build -G Ninja -DBUILD_TESTING=ON && cmake --build build
+ctest --test-dir build --output-on-failure     # C++ unit tests + sidecar protocol
+```
+
+CI (GitHub Actions) runs the unit tests on Ubuntu, the sidecar protocol test,
+and a full application build on Fedora.
+
 ## Roadmap
 
 - [x] Settings UI (in place of editing the config file)
 - [x] Hardware-aware install + on-demand backend management in the UI
 - [x] Automatic updates
+- [x] Configurable paste shortcut (terminal support via `paste/shortcut`)
 - [ ] Voice-activity detection
-- [ ] Configurable paste shortcut (terminal support)
+- [ ] Per-app paste shortcut overrides
 
 ## License
 

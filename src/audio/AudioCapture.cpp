@@ -12,6 +12,7 @@
 namespace {
 constexpr qreal kGain = 9.0;    // maps typical speech RMS toward full-scale
 constexpr qreal kDecay = 0.80;  // peak-hold decay so bars fall smoothly
+constexpr int kMaxSeconds = 600; // safety cap: 10 min ≈ 37 MB of float PCM
 } // namespace
 
 AudioCapture::AudioCapture(QObject *parent) : QObject(parent) {
@@ -41,6 +42,7 @@ void AudioCapture::start() {
     m_source = new QAudioSource(dev, fmt, this);
     m_pcm.clear();
     m_displayLevel = 0.0;
+    m_limitNotified = false;
 
     m_io = m_source->start();   // pull mode: read from the returned QIODevice
     if (!m_io) {
@@ -112,6 +114,17 @@ void AudioCapture::onReadyRead() {
 
     if (frames == 0)
         return;
+
+    // Don't grow without bound if a recording is left running; the buffer is
+    // truncated at the cap and the owner is told once so it can finalize.
+    const qint64 maxSamples = qint64(kMaxSeconds) * qMax(1, m_activeFormat.sampleRate());
+    if (m_pcm.size() > maxSamples) {
+        m_pcm.resize(maxSamples);
+        if (!m_limitNotified) {
+            m_limitNotified = true;
+            emit limitReached();
+        }
+    }
 
     const qreal rms = std::sqrt(sumSq / double(frames));
     const qreal target = qBound(0.0, rms * kGain, 1.0);
