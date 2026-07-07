@@ -5,6 +5,16 @@
 # Usage: scripts/download-model.sh [base|small|medium|distil]   (default: small)
 set -euo pipefail
 
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+else
+    SCRIPT_DIR="${SCRYBE_SRC:-$PWD}"
+fi
+
+# shellcheck source=python-env.sh
+source "$SCRIPT_DIR/scripts/python-env.sh"
+
 MODEL="${1:-small}"
 case "$MODEL" in
     tiny)     REPO="OpenVINO/whisper-tiny-fp16-ov" ;;
@@ -20,11 +30,10 @@ esac
 DIR="$HOME/.local/share/scrybe/models/$(basename "$REPO")"
 mkdir -p "$DIR"
 
-python3 -c "import huggingface_hub" 2>/dev/null \
-    || pip3 install --user -q huggingface_hub
+scrybe_python_has_module huggingface_hub || scrybe_pip_install huggingface_hub
 
 echo "Downloading $REPO -> $DIR"
-python3 - "$REPO" "$DIR" <<'PY'
+"$(scrybe_python)" - "$REPO" "$DIR" <<'PY'
 import sys
 from huggingface_hub import snapshot_download
 snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2],

@@ -12,7 +12,41 @@
 set -euo pipefail
 
 BACKEND="${1:-}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+else
+    SCRIPT_DIR="${SCRYBE_SRC:-$HOME/.local/src/scrybe}"
+fi
+BRANCH="${SCRYBE_BRANCH:-main}"
+
+if [[ -f "$SCRIPT_DIR/scripts/python-env.sh" ]]; then
+    # shellcheck source=python-env.sh
+    source "$SCRIPT_DIR/scripts/python-env.sh"
+else
+    SCRYBE_PYTHON_VENV="${SCRYBE_PYTHON_VENV:-$HOME/.local/share/scrybe/venv}"
+    scrybe_python() {
+        if [[ -x "$SCRYBE_PYTHON_VENV/bin/python" ]]; then
+            printf '%s\n' "$SCRYBE_PYTHON_VENV/bin/python"
+        else
+            printf '%s\n' python3
+        fi
+    }
+    scrybe_ensure_venv() {
+        command -v python3 >/dev/null || return 1
+        if [[ ! -x "$SCRYBE_PYTHON_VENV/bin/python" ]]; then
+            mkdir -p "$(dirname "$SCRYBE_PYTHON_VENV")"
+            python3 -m venv "$SCRYBE_PYTHON_VENV" || return 1
+        fi
+        "$SCRYBE_PYTHON_VENV/bin/python" -m pip --version >/dev/null 2>&1 \
+            || "$SCRYBE_PYTHON_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 \
+            || return 1
+    }
+    scrybe_pip_install() {
+        scrybe_ensure_venv || return 1
+        "$SCRYBE_PYTHON_VENV/bin/python" -m pip install -q "$@"
+    }
+fi
 
 c_blue=$'\e[1;34m'; c_grn=$'\e[1;32m'; c_yel=$'\e[1;33m'; c_red=$'\e[1;31m'; c_rst=$'\e[0m'
 step() { echo; echo "${c_blue}==> $*${c_rst}"; }
@@ -33,12 +67,19 @@ case "$BACKEND" in
 
   faster-whisper|fasterwhisper)
     step "Installing faster-whisper (NVIDIA CUDA / CPU)"
-    command -v pip3 >/dev/null || die "pip3 not found — install python3-pip first."
-    pip3 install --user -q faster-whisper || die "pip install failed."
+    command -v python3 >/dev/null || die "python3 not found — run build-and-setup.sh first."
+    scrybe_pip_install faster-whisper || die "pip install failed."
     mkdir -p "$HOME/.local/share/scrybe/backends"
-    install -m644 "$SCRIPT_DIR/scripts/faster_whisper_sidecar.py" \
-        "$HOME/.local/share/scrybe/backends/" 2>/dev/null || true
-    ok "faster-whisper installed. Select it in Settings ▸ Speech (or use 'auto')."
+    sidecar_dst="$HOME/.local/share/scrybe/backends/faster_whisper_sidecar.py"
+    if [[ -f "$SCRIPT_DIR/scripts/faster_whisper_sidecar.py" ]]; then
+        install -m644 "$SCRIPT_DIR/scripts/faster_whisper_sidecar.py" "$sidecar_dst"
+    elif command -v curl >/dev/null; then
+        curl -fsSL "https://raw.githubusercontent.com/mrelmida/scrybe/$BRANCH/scripts/faster_whisper_sidecar.py" \
+            -o "$sidecar_dst" || warn "could not refresh faster-whisper sidecar."
+    else
+        warn "curl not found; could not refresh faster-whisper sidecar."
+    fi
+    ok "faster-whisper installed in $SCRYBE_PYTHON_VENV. Select it in Settings ▸ Speech (or use 'auto')."
     ;;
 
   whispercpp|whisper.cpp)

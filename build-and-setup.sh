@@ -17,13 +17,21 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------- #
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+else
+    SCRIPT_DIR="${SCRYBE_SRC:-$PWD}"
+fi
 PREFIX="${SCRYBE_PREFIX:-$HOME/.local}"
 SHORTCUT="${SCRYBE_SHORTCUT:-Meta+Alt+D}"
 OLLAMA_MODEL="${SCRYBE_OLLAMA_MODEL:-qwen2.5:1.5b}"
 OV_PREFIX="/opt/scrybe-openvino"
 CONFIG_DIR="$HOME/.config/scrybe"
 BUILD_DIR="$SCRIPT_DIR/build"
+
+# shellcheck source=scripts/python-env.sh
+source "$SCRIPT_DIR/scripts/python-env.sh"
 
 c_blue=$'\e[1;34m'; c_grn=$'\e[1;32m'; c_yel=$'\e[1;33m'; c_red=$'\e[1;31m'; c_rst=$'\e[0m'
 step() { echo; echo "${c_blue}==> $*${c_rst}"; }
@@ -98,14 +106,14 @@ fi
 if [[ -z "${SCRYBE_SKIP_DEPS:-}" ]]; then
     step "Installing build tools, Qt6, and Wayland helpers ($PM)"
     case "$PM" in
-        dnf)    pkg_install fatal gcc-c++ cmake ninja-build pkgconf-pkg-config git python3 curl \
+        dnf)    pkg_install fatal gcc-c++ cmake ninja-build pkgconf-pkg-config git python3 python3-pip curl \
                     qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel \
                     qt6-qtshadertools-devel layer-shell-qt-devel kf6-kglobalaccel-devel \
                     wl-clipboard ydotool ;;
         pacman) pkg_install fatal base-devel cmake ninja pkgconf git python python-pip curl \
                     qt6-base qt6-declarative qt6-multimedia qt6-shadertools \
                     layer-shell-qt kglobalaccel wl-clipboard ydotool ;;
-        apt)    pkg_install fatal build-essential cmake ninja-build pkg-config git python3 python3-pip curl \
+        apt)    pkg_install fatal build-essential cmake ninja-build pkg-config git python3 python3-pip python3-venv curl \
                     qt6-base-dev qt6-declarative-dev qt6-multimedia-dev qt6-shadertools-dev \
                     liblayershellqtinterface-dev libkf6globalaccel-dev wl-clipboard ydotool ;;
         zypper) pkg_install fatal gcc-c++ cmake ninja pkgconf-pkg-config git python3 python3-pip curl \
@@ -300,9 +308,9 @@ if [[ -z "${SCRYBE_SKIP_BACKENDS:-}" ]]; then
     # NVIDIA machines, or any machine where OpenVINO isn't being installed (the
     # 'auto' backend then falls back to faster-whisper on CPU).
     if [[ $HAS_NVIDIA -eq 1 || $WANT_OPENVINO -eq 0 || -n "${SCRYBE_WITH_FASTER_WHISPER:-}" ]]; then
-        pip3 install --user -q faster-whisper \
-            && ok "faster-whisper installed (CUDA/CPU)." \
-            || warn "faster-whisper install failed (run: pip3 install --user faster-whisper)."
+        scrybe_pip_install faster-whisper \
+            && ok "faster-whisper installed in $SCRYBE_PYTHON_VENV (CUDA/CPU)." \
+            || warn "faster-whisper install failed (run: SCRYBE_WITH_FASTER_WHISPER=1 ./build-and-setup.sh)."
     else
         echo "     (faster-whisper skipped; set SCRYBE_WITH_FASTER_WHISPER=1 to install)"
     fi

@@ -5,6 +5,7 @@
 #include "paste/Paster.h"
 #include "stt/Models.h"
 #include "stt/SttEngine.h"
+#include "util/PythonEnv.h"
 #include "update/Updater.h"
 #include "util/Terminal.h"
 
@@ -207,7 +208,7 @@ void Controller::ensureDownloaded(const QString &key, std::function<void(bool)> 
     }
     emit notify(tr("Downloading model '%1'…").arg(key));
     auto *p = new QProcess(this);
-    p->setProgram(QStringLiteral("python3"));
+    p->setProgram(scrybe::pythonExecutable());
     // Repo and path travel as argv, not interpolated into the code string.
     p->setArguments({QStringLiteral("-c"),
         QStringLiteral("import sys\n"
@@ -464,7 +465,7 @@ void Controller::probeBackends(bool force) {
                     m_fasterWhisperAvail = 0;
                     emit backendProbesChanged();
                 });
-        p->start(QStringLiteral("python3"),
+        p->start(scrybe::pythonExecutable(),
                  {QStringLiteral("-c"),
                   QStringLiteral("import importlib.util,sys;"
                                  "sys.exit(0 if importlib.util.find_spec('faster_whisper') else 1)")});

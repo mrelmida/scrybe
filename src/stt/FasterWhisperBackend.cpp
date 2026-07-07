@@ -1,5 +1,7 @@
 #include "FasterWhisperBackend.h"
 
+#include "util/PythonEnv.h"
+
 #include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
@@ -59,7 +61,7 @@ bool FasterWhisperBackend::load(const QString &model, const QString &device,
     else dev = QStringLiteral("auto");
 
     m_proc = new QProcess();
-    m_proc->setProgram(QStringLiteral("python3"));
+    m_proc->setProgram(scrybe::pythonExecutable());
     m_proc->setArguments({script, QStringLiteral("--model"), model,
                           QStringLiteral("--device"), dev});
     m_proc->start();

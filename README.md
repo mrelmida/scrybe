@@ -122,6 +122,10 @@ scripts/download-model.sh turbo   # tiny|base|small|medium|turbo|large-v3|distil
 ## Backends
 
 ### faster-whisper (NVIDIA / CPU)
+The installer keeps Python packages in Scrybe's private venv at
+`~/.local/share/scrybe/venv`, so it works on PEP 668 distributions such as Arch
+without modifying the system Python.
+
 ```bash
 kwriteconfig6 --file ~/.config/scrybe/scrybe.conf --group stt --key backend faster-whisper
 kwriteconfig6 --file ~/.config/scrybe/scrybe.conf --group stt --key device cuda   # or cpu
