@@ -1,6 +1,6 @@
 <div align="center">
 
-# Scrybe
+# The Scrybe
 
 **On-device voice dictation for Linux — speak anywhere, paste anywhere.**
 
