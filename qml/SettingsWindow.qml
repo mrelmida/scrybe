@@ -12,7 +12,7 @@ Window {
     minimumHeight: 520
     color: win.bg
     flags: Qt.Dialog
-    onClosing: { micPane.testing = false; controller.stopMicPreview(); controller.setSettingsOpen(false) }
+    onClosing: { controller.stopMicPreview(); controller.setSettingsOpen(false) }
 
     // ---- themes ------------------------------------------------------------
     // Flat glassmorphism: near-flat bases with translucent, hairline-edged
@@ -528,7 +528,7 @@ Window {
                     id: micPane
                     width: parent.width
                     spacing: 16
-                    property bool testing: false
+                    readonly property bool testing: controller.micPreviewActive
                     function refreshDevices() {
                         var cur = micBox.currentValue !== undefined ? micBox.currentValue
                                                                     : controller.micDevice
@@ -541,18 +541,8 @@ Window {
                             if (win.pane === 2) {
                                 micPane.refreshDevices()
                             } else if (micPane.testing) {
-                                micPane.testing = false
                                 controller.stopMicPreview()
                             }
-                        }
-                    }
-                    Connections {
-                        // A dictation session (hotkey) takes the mic over; the
-                        // preview does not resume when it ends.
-                        target: controller
-                        function onStateChanged() {
-                            if (controller.stateName !== "idle")
-                                micPane.testing = false
                         }
                     }
                     Item { Layout.preferredHeight: 6 }
@@ -588,9 +578,8 @@ Window {
                                 text: micPane.testing ? "Stop test" : "Test microphone"
                                 primary: !micPane.testing
                                 onClicked: {
-                                    micPane.testing = !micPane.testing
-                                    if (micPane.testing) controller.startMicPreview()
-                                    else controller.stopMicPreview()
+                                    if (micPane.testing) controller.stopMicPreview()
+                                    else controller.startMicPreview()
                                 }
                             }
                             ColumnLayout {

@@ -42,7 +42,7 @@ print("done")
 PY
 
 # Completion marker: the app treats a directory without it as an interrupted
-# download and resumes it (keep in sync with Controller::ensureDownloaded).
+# download and resumes it (keep in sync with ModelDownloader::ensure).
 touch "$DIR/.complete"
 
 echo "Model ready: $DIR"

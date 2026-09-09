@@ -10,7 +10,9 @@ class QProcess;
 // "large-v3-turbo", "distil-large-v3"); `device` is "cuda", "cpu" or "auto".
 class FasterWhisperBackend : public ISttBackend {
 public:
-    FasterWhisperBackend();
+    explicit FasterWhisperBackend(const QString &scriptOverride = {},
+                                  int requestTimeoutMs = 120000,
+                                  const QString &pythonOverride = {});
     ~FasterWhisperBackend() override;
 
     bool load(const QString &model, const QString &device,
@@ -22,6 +24,12 @@ public:
 
 private:
     QString readLine(int timeoutMs, QString *err);
+    void stopProcess();
+    QString m_scriptOverride;
+    QString m_pythonOverride;
+    QString m_loadedModel;
+    QString m_loadedDevice;
+    int m_requestTimeoutMs;
 
     QProcess *m_proc = nullptr;
 };

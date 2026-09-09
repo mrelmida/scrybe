@@ -82,6 +82,8 @@ qt_add_executable(scrybe
     src/main.cpp
     src/core/Controller.h
     src/core/Controller.cpp
+    src/core/ModelDownloader.h
+    src/core/ModelDownloader.cpp
     src/audio/AudioCapture.h
     src/audio/AudioCapture.cpp
     src/stt/SttEngine.h

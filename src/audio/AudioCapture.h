@@ -3,6 +3,8 @@
 #include "util/Vad.h"
 
 #include <QAudioFormat>
+#include <QAudioDevice>
+#include <functional>
 #include <QByteArray>
 #include <QObject>
 #include <QVector>
@@ -15,7 +17,8 @@ class QIODevice;
 class AudioCapture : public QObject {
     Q_OBJECT
 public:
-    explicit AudioCapture(QObject *parent = nullptr);
+    using DeviceLookup = std::function<QAudioDevice(const QString &)>;
+    explicit AudioCapture(QObject *parent = nullptr, DeviceLookup lookup = {});
     ~AudioCapture() override;
 
     bool isActive() const { return m_source != nullptr; }
@@ -30,7 +33,7 @@ public:
     double silenceMs() const { return m_vad.silenceMs(); }
 
 public slots:
-    void start();
+    bool start();
     void stop();
     void setGain(qreal gain);   // display scale only; applies live to the meter
 
@@ -40,7 +43,12 @@ signals:
     void limitReached();              // capture hit the safety cap (once per start)
 
 private:
+    friend class AudioCaptureTest;
     void onReadyRead();
+    void resetCapture();
+    void captureFailed(const QString &message);
+    static bool supportedFormat(const QAudioFormat &format);
+    DeviceLookup m_deviceLookup;
 
     QAudioFormat m_format;         // requested (16 kHz mono float)
     QAudioFormat m_activeFormat;   // what the device actually gave us
