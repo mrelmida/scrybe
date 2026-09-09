@@ -37,11 +37,16 @@ Style styleFor(const QString &style) {
             0.3};
     }
     if (style != QLatin1String("format")) {
-        // Custom user preset: the prompt is stored under presets/<name>.
+        // Custom user preset: prompt under presets/<name>, temperature under
+        // presetTemps/<name>.
+        QSettings s;
         const QString custom =
-            QSettings().value(QStringLiteral("presets/") + style).toString();
-        if (!custom.trimmed().isEmpty())
-            return {custom.trimmed(), 0.3};
+            s.value(QStringLiteral("presets/") + style).toString();
+        if (!custom.trimmed().isEmpty()) {
+            const double t =
+                s.value(QStringLiteral("presetTemps/") + style, 0.3).toDouble();
+            return {custom.trimmed(), t};
+        }
     }
     // "format" (default): light clean-up only.
     return {QStringLiteral(
@@ -51,18 +56,29 @@ Style styleFor(const QString &style) {
         0.1};
 }
 
+// Parse an /api/generate reply into the response text ("" on any error, with
+// the reason in *error).
+QString parseReply(QNetworkReply *reply, QString *error) {
+    if (reply->error() != QNetworkReply::NoError) {
+        *error = QStringLiteral("Ollama request failed: %1").arg(reply->errorString());
+        return QString();
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    const QString out =
+        scrybe::unquote(obj.value(QStringLiteral("response")).toString());
+    if (out.isEmpty())
+        *error = QStringLiteral("Ollama returned an empty response.");
+    return out;
+}
+
 } // namespace
 
 LlmBeautifier::LlmBeautifier(QObject *parent) : QObject(parent) {
     m_nam = new QNetworkAccessManager(this);
 }
 
-void LlmBeautifier::beautify(const QString &text, const QString &style) {
-    if (text.trimmed().isEmpty()) {
-        emit done(text);
-        return;
-    }
-
+QNetworkReply *LlmBeautifier::post(const QString &system, const QString &prompt,
+                                   double temp) {
     // Read the endpoint/model per request so settings edits apply immediately.
     QSettings cfg;
     const QString endpoint = cfg.value(QStringLiteral("llm/endpoint"),
@@ -70,37 +86,75 @@ void LlmBeautifier::beautify(const QString &text, const QString &style) {
     const QString model = cfg.value(QStringLiteral("llm/model"),
                                     QStringLiteral("qwen2.5:1.5b")).toString();
 
-    const Style s = styleFor(style);
     QJsonObject body{
         {QStringLiteral("model"), model},
-        {QStringLiteral("system"), s.system + QString::fromLatin1(kGuard)},
-        {QStringLiteral("prompt"),
-         QStringLiteral("Input: ") + text + QStringLiteral("\nOutput:")},
+        {QStringLiteral("system"), system},
+        {QStringLiteral("prompt"), prompt},
         {QStringLiteral("stream"), false},
-        {QStringLiteral("options"), QJsonObject{{QStringLiteral("temperature"), s.temp}}},
+        {QStringLiteral("options"), QJsonObject{{QStringLiteral("temperature"), temp}}},
     };
 
     QNetworkRequest req(QUrl(endpoint + QStringLiteral("/api/generate")));
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    req.setTransferTimeout(20000);
+    req.setTransferTimeout(30000);
+    return m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+}
 
+void LlmBeautifier::beautify(const QString &text, const QString &style) {
+    if (text.trimmed().isEmpty()) {
+        emit done(text);
+        return;
+    }
+    const Style s = styleFor(style);
     QNetworkReply *reply =
-        m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-
-    connect(reply, &QNetworkReply::finished, this, [this, reply, text]() {
+        post(s.system + QString::fromLatin1(kGuard),
+             QStringLiteral("Input: ") + text + QStringLiteral("\nOutput:"),
+             s.temp);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            emit failed(QStringLiteral("Ollama request failed: %1")
-                            .arg(reply->errorString()));
-            return;
-        }
-        const QJsonObject obj =
-            QJsonDocument::fromJson(reply->readAll()).object();
-        const QString out =
-            scrybe::unquote(obj.value(QStringLiteral("response")).toString());
-        if (out.isEmpty())
-            emit failed(QStringLiteral("Ollama returned an empty response."));
-        else
-            emit done(out);
+        QString err;
+        const QString out = parseReply(reply, &err);
+        if (out.isEmpty()) emit failed(err);
+        else emit done(out);
+    });
+}
+
+// Identical framing to beautify() so the settings "Try it" box shows exactly
+// what a dictation through this preset would produce.
+void LlmBeautifier::preview(const QString &text, const QString &systemPrompt,
+                            double temp) {
+    QNetworkReply *reply =
+        post(systemPrompt.trimmed() + QString::fromLatin1(kGuard),
+             QStringLiteral("Input: ") + text + QStringLiteral("\nOutput:"),
+             temp);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        QString err;
+        const QString out = parseReply(reply, &err);
+        if (out.isEmpty()) emit previewFailed(err);
+        else emit previewDone(out);
+    });
+}
+
+void LlmBeautifier::draftPreset(const QString &description) {
+    QNetworkReply *reply = post(
+        QStringLiteral(
+            "You write system prompts for a speech-to-text formatting assistant. "
+            "The user describes a formatting style; you reply with ONLY the "
+            "system prompt text — no quotes, headings, or explanation. The "
+            "prompt you write must: address the assistant in the second person "
+            "('You ...'); tell it to transform dictated text into the described "
+            "style; tell it to fix punctuation and casing and remove filler "
+            "words; and tell it to preserve the meaning and all information. "
+            "Keep it under 120 words."),
+        QStringLiteral("Style description: ") + description +
+            QStringLiteral("\nSystem prompt:"),
+        0.7);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        QString err;
+        const QString out = parseReply(reply, &err);
+        if (out.isEmpty()) emit draftFailed(err);
+        else emit draftDone(out);
     });
 }

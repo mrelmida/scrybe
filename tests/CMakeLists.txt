@@ -1,6 +1,6 @@
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
-foreach(t version resample wav text)
+foreach(t version resample wav text vad)
     add_executable(tst_${t} tst_${t}.cpp)
     target_link_libraries(tst_${t} PRIVATE scrybe_core Qt6::Test)
     add_test(NAME ${t} COMMAND tst_${t})

@@ -34,6 +34,12 @@ class Controller : public QObject {
     Q_PROPERTY(bool settingsOpen READ settingsOpen WRITE setSettingsOpen NOTIFY settingsOpenChanged)
     Q_PROPERTY(QString model READ model WRITE setModel NOTIFY modelChanged)
     Q_PROPERTY(QString theme READ theme WRITE setTheme NOTIFY themeChanged)
+    Q_PROPERTY(QString micDevice READ micDevice WRITE setMicDevice NOTIFY micDeviceChanged)
+    Q_PROPERTY(qreal micGain READ micGain WRITE setMicGain NOTIFY micGainChanged)
+    Q_PROPERTY(bool vadEnabled READ vadEnabled WRITE setVadEnabled NOTIFY vadEnabledChanged)
+    Q_PROPERTY(qreal autoSendSecs READ autoSendSecs WRITE setAutoSendSecs NOTIFY autoSendSecsChanged)
+    Q_PROPERTY(QString llmModel READ llmModel WRITE setLlmModel NOTIFY llmModelChanged)
+    Q_PROPERTY(QString llmEndpoint READ llmEndpoint WRITE setLlmEndpoint NOTIFY llmEndpointChanged)
     Q_PROPERTY(QObject *updater READ updater CONSTANT)
 
 public:
@@ -65,6 +71,19 @@ public:
     bool settingsOpen() const { return m_settingsOpen; }
     void setSettingsOpen(bool on);
 
+    QString micDevice() const;
+    void setMicDevice(const QString &id);
+    qreal micGain() const;
+    void setMicGain(qreal g);
+    bool vadEnabled() const;
+    void setVadEnabled(bool on);
+    qreal autoSendSecs() const;        // 0 = manual send only
+    void setAutoSendSecs(qreal secs);
+    QString llmModel() const;
+    void setLlmModel(const QString &m);
+    QString llmEndpoint() const;
+    void setLlmEndpoint(const QString &e);
+
     QObject *updater() const;
 
     // Exposed to the settings UI.
@@ -73,14 +92,29 @@ public:
     Q_INVOKABLE QStringList backendList() const;
     Q_INVOKABLE QStringList presetNames() const;
     Q_INVOKABLE QString presetPrompt(const QString &name) const;
-    Q_INVOKABLE void savePreset(const QString &name, const QString &prompt);
+    Q_INVOKABLE double presetTemp(const QString &name) const;
+    Q_INVOKABLE bool savePreset(const QString &name, const QString &prompt,
+                                double temp = 0.3);
     Q_INVOKABLE void deletePreset(const QString &name);
+    // AI helpers for the preset editor (results arrive via the signals below).
+    Q_INVOKABLE void generatePreset(const QString &description);
+    Q_INVOKABLE void testPreset(const QString &prompt, double temp,
+                                const QString &sample);
+
+    // Microphone settings UI.
+    Q_INVOKABLE QVariantList micDeviceList() const;   // [{key,label}], key="" = system default
+    Q_INVOKABLE void startMicPreview();               // live level meter while Idle
+    Q_INVOKABLE void stopMicPreview();
 
     // Hardware / backend management for the settings UI.
     Q_INVOKABLE QVariantMap hardwareInfo() const;   // {nvidia,intel,amd,gpus,cpu}
     Q_INVOKABLE QVariantList backendInfo();         // per-backend availability (cached)
     Q_INVOKABLE void probeBackends(bool force = false);   // async; emits backendProbesChanged
     Q_INVOKABLE void installBackend(const QString &key);   // runs helper in a terminal
+
+    // Ollama reachability + installed models for the settings UI.
+    Q_INVOKABLE QVariantMap llmProbeInfo() const;   // {checking,available,models:[...]}
+    Q_INVOKABLE void probeLlm(bool force = false);  // async; emits llmProbeChanged
 
 public slots:
     void toggle();
@@ -103,11 +137,22 @@ signals:
     void languageChanged();
     void settingsOpenChanged();
     void presetsChanged();
+    void presetDraftReady(const QString &text);     // generatePreset result
+    void presetDraftFailed(const QString &message);
+    void presetTestReady(const QString &text);      // testPreset result
+    void presetTestFailed(const QString &message);
     void modelChanged();
+    void micDeviceChanged();
+    void micGainChanged();
+    void vadEnabledChanged();
+    void autoSendSecsChanged();
+    void llmModelChanged();
+    void llmEndpointChanged();
     void requestShow();
     void requestHide();
     void notify(const QString &message);   // non-fatal user-facing messages
     void backendProbesChanged();           // an async availability probe finished
+    void llmProbeChanged();                // an async Ollama reachability probe finished
 
 private:
     void setState(State s);
@@ -141,6 +186,7 @@ private:
 
     QTimer *m_partialTimer = nullptr;
     QTimer *m_unloadTimer = nullptr;   // unloads the model after idle
+    QTimer *m_autoSendTimer = nullptr; // watches for post-speech silence
     bool m_sttBusy = false;   // a transcription is in flight
     bool m_cancelled = false; // ignore results after a cancel
     bool m_modelReady = false;
@@ -154,4 +200,10 @@ private:
     int m_whisperCppAvail = -1;      // -1 unknown, 0 no, 1 yes (cached)
     bool m_probingPython = false;
     bool m_probingWhisperCpp = false;
+
+    // Async Ollama reachability + installed-model probe (settings "Formatting" pane).
+    QNetworkAccessManager *m_llmNam = nullptr;
+    QStringList m_llmModels;
+    int m_llmAvail = -1;   // -1 unknown, 0 unreachable, 1 reachable
+    bool m_probingLlm = false;
 };

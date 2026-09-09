@@ -12,7 +12,7 @@ Window {
     minimumHeight: 520
     color: win.bg
     flags: Qt.Dialog
-    onClosing: controller.setSettingsOpen(false)
+    onClosing: { micPane.testing = false; controller.stopMicPreview(); controller.setSettingsOpen(false) }
 
     // ---- themes ------------------------------------------------------------
     // Flat glassmorphism: near-flat bases with translucent, hairline-edged
@@ -75,11 +75,13 @@ Window {
     readonly property string gCheck: "<polyline points='20 6 9 17 4 12'/>"
     readonly property string gDownload: "<path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='7 10 12 15 17 10'/><line x1='12' y1='15' x2='12' y2='3'/>"
     readonly property string gArrowUp: "<line x1='12' y1='19' x2='12' y2='5'/><polyline points='5 12 12 5 19 12'/>"
+    readonly property string gSliders: "<line x1='4' y1='21' x2='4' y2='14'/><line x1='4' y1='10' x2='4' y2='3'/><line x1='12' y1='21' x2='12' y2='12'/><line x1='12' y1='8' x2='12' y2='3'/><line x1='20' y1='21' x2='20' y2='16'/><line x1='20' y1='12' x2='20' y2='3'/><line x1='1' y1='14' x2='7' y2='14'/><line x1='9' y1='8' x2='15' y2='8'/><line x1='17' y1='16' x2='23' y2='16'/>"
 
     property int pane: 0
     readonly property var nav: [
         { glyph: "<circle cx='12' cy='12' r='9'/><circle cx='8.5' cy='10' r='1'/><circle cx='12' cy='8' r='1'/><circle cx='15.5' cy='10' r='1'/><circle cx='10' cy='15' r='1'/>", label: "Appearance" },
         { glyph: gMic, label: "Speech" },
+        { glyph: gSliders, label: "Microphone" },
         { glyph: "<polyline points='4 7 4 4 20 4 20 7'/><line x1='9' y1='20' x2='15' y2='20'/><line x1='12' y1='4' x2='12' y2='20'/>", label: "Formatting" },
         { glyph: "<path d='M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/>", label: "Presets" },
         { glyph: "<rect x='3' y='4' width='18' height='16' rx='2'/><line x1='3' y1='9' x2='21' y2='9'/>", label: "Overlay" },
@@ -173,16 +175,22 @@ Window {
             x: cb.width - 24; y: (cb.height - height) / 2
             text: "⌄"; color: win.sub; font.pixelSize: 16
         }
+        // Qt 6.11 no longer injects modelData/index into ComboBox delegates as
+        // context properties — they must be declared `required` (see the Basic
+        // style's own delegate). `model[role]` covers object rows; plain string
+        // lists expose the value under the implicit "modelData" role.
         delegate: ItemDelegate {
+            id: dlg
+            required property var model
+            required property int index
             width: cb.width
             contentItem: Text {
-                text: cb.textRole ? (Array.isArray(cb.model) ? modelData[cb.textRole] : model[cb.textRole])
-                                  : modelData
+                text: cb.textRole ? dlg.model[cb.textRole] : dlg.model.modelData
                 color: win.txt; font: cb.font; verticalAlignment: Text.AlignVCenter
                 leftPadding: 6
             }
-            background: Rectangle { color: highlighted ? win.hover : "transparent"; radius: 6 }
-            highlighted: cb.highlightedIndex === index
+            background: Rectangle { color: dlg.highlighted ? win.hover : "transparent"; radius: 6 }
+            highlighted: cb.highlightedIndex === dlg.index
         }
         popup.background: Rectangle { radius: 10; color: win.cardHi; border.color: win.stroke; border.width: 1 }
     }
@@ -228,6 +236,39 @@ Window {
                 y: 3; x: sw.checked ? parent.width - width - 3 : 3
                 Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
             }
+        }
+    }
+    component Sld: Slider {
+        id: sl
+        Layout.fillWidth: true
+        implicitHeight: 28
+        background: Rectangle {
+            x: sl.leftPadding; y: sl.topPadding + sl.availableHeight / 2 - height / 2
+            width: sl.availableWidth; height: 6; radius: 3
+            color: win.track
+            Rectangle {
+                width: sl.visualPosition * parent.width; height: parent.height; radius: 3
+                color: win.accent
+            }
+        }
+        handle: Rectangle {
+            x: sl.leftPadding + sl.visualPosition * (sl.availableWidth - width)
+            y: sl.topPadding + sl.availableHeight / 2 - height / 2
+            width: 18; height: 18; radius: 9
+            color: "white"
+            border.color: win.stroke; border.width: 1
+        }
+    }
+    component Meter: Rectangle {
+        property real level: 0
+        Layout.fillWidth: true
+        implicitHeight: 10; radius: 5
+        color: win.track
+        Rectangle {
+            width: parent.width * Math.max(0, Math.min(1, parent.level))
+            height: parent.height; radius: 5
+            color: parent.level > 0.85 ? win.warn : win.accent
+            Behavior on width { NumberAnimation { duration: 60 } }
         }
     }
     component Badge: Rectangle {
@@ -322,7 +363,7 @@ Window {
                         Ico { glyph: win.gArrowUp; size: 15; color: win.good }
                         Text { text: "Update ready"; color: win.good; font.pixelSize: 12; font.bold: true }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: win.pane = 6 }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: win.pane = 7 }
                 }
             }
         }
@@ -453,14 +494,199 @@ Window {
                             onEditingFinished: controller.setLanguage(text.trim() === "" ? "auto" : text.trim())
                         }
                     }
+
+                    Card {
+                        Layout.leftMargin: 24; Layout.rightMargin: 24
+                        Header { text: "Voice activity" }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 2
+                                Field { text: "Skip silence" }
+                                Caption { text: "Skip recordings with no detected voice activity to reduce empty transcriptions. Energy detection can miss quiet or continuous speech and mistake changing noise for speech. Turn this off if words are skipped." }
+                            }
+                            Toggle { checked: controller.vadEnabled; onToggled: controller.vadEnabled = checked }
+                        }
+
+                        Field {
+                            text: "Auto-send after silence  ·  "
+                                  + (controller.autoSendSecs > 0 ? controller.autoSendSecs.toFixed(1) + "s" : "off")
+                        }
+                        Sld {
+                            from: 0; to: 5; stepSize: 0.5
+                            value: controller.autoSendSecs
+                            onMoved: controller.setAutoSendSecs(value)
+                        }
+                        Caption { text: "Hands-free dictation: once you've spoken and then stayed quiet this long, Scrybe sends automatically — no Enter needed. Set to off for manual send only." }
+                    }
                     Item { Layout.fillHeight: true; Layout.preferredHeight: 8 }
                 }
 
-                // ======================================= 2 · FORMATTING ====
+                // ======================================= 2 · MICROPHONE ====
                 ColumnLayout {
+                    id: micPane
                     width: parent.width
                     spacing: 16
+                    property bool testing: false
+                    function refreshDevices() {
+                        var cur = micBox.currentValue !== undefined ? micBox.currentValue
+                                                                    : controller.micDevice
+                        micBox.model = controller.micDeviceList()
+                        micBox.currentIndex = win.indexByKey(micBox.model, cur)
+                    }
+                    Connections {
+                        target: win
+                        function onPaneChanged() {
+                            if (win.pane === 2) {
+                                micPane.refreshDevices()
+                            } else if (micPane.testing) {
+                                micPane.testing = false
+                                controller.stopMicPreview()
+                            }
+                        }
+                    }
+                    Connections {
+                        // A dictation session (hotkey) takes the mic over; the
+                        // preview does not resume when it ends.
+                        target: controller
+                        function onStateChanged() {
+                            if (controller.stateName !== "idle")
+                                micPane.testing = false
+                        }
+                    }
                     Item { Layout.preferredHeight: 6 }
+
+                    Card {
+                        Layout.leftMargin: 24; Layout.rightMargin: 24
+                        Header { text: "Microphone" }
+
+                        Field { text: "Input device" }
+                        CBox {
+                            id: micBox
+                            textRole: "label"; valueRole: "key"
+                            model: controller.micDeviceList()
+                            Component.onCompleted: currentIndex = win.indexByKey(model, controller.micDevice)
+                            onActivated: controller.setMicDevice(currentValue)
+                        }
+                        Caption { text: "Which input Scrybe records from. Plugged in a new mic? Revisit this pane to refresh the list." }
+
+                        Field { text: "Level meter scale  ·  ×" + controller.micGain.toFixed(1) }
+                        Sld {
+                            id: gainSlider
+                            from: 1; to: 25; stepSize: 0.5
+                            value: controller.micGain
+                            onMoved: controller.setMicGain(value)
+                        }
+                        Caption { text: "Changes how strongly the level meter and overlay react. Recorded volume, transcription, and voice detection stay the same. Adjust microphone input volume in your system sound settings." }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 4
+                            spacing: 12
+                            Btn {
+                                text: micPane.testing ? "Stop test" : "Test microphone"
+                                primary: !micPane.testing
+                                onClicked: {
+                                    micPane.testing = !micPane.testing
+                                    if (micPane.testing) controller.startMicPreview()
+                                    else controller.stopMicPreview()
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 4
+                                Meter { level: controller.level }
+                                Caption { text: micPane.testing ? "Speak — the bar should move with your voice." : "Press Test microphone and speak to check your setup." }
+                            }
+                        }
+                    }
+                    Item { Layout.fillHeight: true; Layout.preferredHeight: 8 }
+                }
+
+                // ======================================= 3 · FORMATTING ====
+                ColumnLayout {
+                    id: llmPane
+                    width: parent.width
+                    spacing: 16
+                    property var probe: ({ checking: false, available: false, models: [] })
+                    function refreshProbe() { llmPane.probe = controller.llmProbeInfo() }
+                    Component.onCompleted: { controller.probeLlm(false); refreshProbe() }
+                    Connections {
+                        target: controller
+                        function onLlmProbeChanged() { llmPane.refreshProbe() }
+                    }
+                    Item { Layout.preferredHeight: 6 }
+
+                    Card {
+                        Layout.leftMargin: 24; Layout.rightMargin: 24
+                        Header { text: "Ollama connection" }
+
+                        Field { text: "Endpoint" }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            TxtField {
+                                id: endpointField
+                                text: controller.llmEndpoint
+                                placeholderText: "http://localhost:11434"
+                                onEditingFinished: controller.setLlmEndpoint(text)
+                            }
+                            Btn {
+                                text: llmPane.probe.checking ? "Checking…" : "Test"
+                                enabled: !llmPane.probe.checking
+                                onClicked: { controller.setLlmEndpoint(endpointField.text); controller.probeLlm(true) }
+                            }
+                        }
+                        RowLayout {
+                            spacing: 8
+                            Rectangle {
+                                width: 8; height: 8; radius: 4
+                                color: llmPane.probe.checking ? win.warn : (llmPane.probe.available ? win.good : win.danger)
+                            }
+                            Caption {
+                                text: llmPane.probe.checking ? "Checking…"
+                                      : llmPane.probe.available
+                                          ? ("Connected — " + llmPane.probe.models.length + " model"
+                                             + (llmPane.probe.models.length === 1 ? "" : "s") + " available")
+                                          : "Unreachable — is Ollama running?"
+                            }
+                        }
+
+                        Field { text: "Model" }
+                        TxtField {
+                            id: llmModelField
+                            text: controller.llmModel
+                            placeholderText: "e.g. qwen2.5:1.5b"
+                            onEditingFinished: controller.setLlmModel(text)
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            visible: llmPane.probe.models.length > 0
+                            spacing: 8
+                            Repeater {
+                                model: llmPane.probe.models
+                                delegate: Rectangle {
+                                    required property string modelData
+                                    property bool sel: modelData === controller.llmModel
+                                    implicitHeight: 26; implicitWidth: chipText.implicitWidth + 20
+                                    radius: 13
+                                    color: sel ? Qt.rgba(win.accent.r, win.accent.g, win.accent.b, 0.18) : win.hover
+                                    border.color: sel ? win.accent : win.stroke; border.width: 1
+                                    Text {
+                                        id: chipText
+                                        anchors.centerIn: parent
+                                        text: modelData; font.pixelSize: 12
+                                        color: sel ? win.accent : win.txt
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: { llmModelField.text = modelData; controller.setLlmModel(modelData) }
+                                    }
+                                }
+                            }
+                        }
+                        Caption { text: "The Ollama model used to clean up dictated text. Pull new ones with `ollama pull <name>`, then Test to refresh this list." }
+                    }
 
                     Card {
                         Layout.leftMargin: 24; Layout.rightMargin: 24
@@ -498,19 +724,98 @@ Window {
                     Item { Layout.fillHeight: true; Layout.preferredHeight: 8 }
                 }
 
-                // ========================================== 3 · PRESETS ====
+                // ========================================== 4 · PRESETS ====
                 ColumnLayout {
+                    id: presetPane
                     width: parent.width
                     spacing: 16
+                    property var names: controller.presetNames()
+                    property bool generating: false
+                    property bool testing: false
+                    property string errorText: ""
+                    property int editorRevision: 0
+                    property int sampleRevision: 0
+                    property int draftRevision: -1
+                    property string draftDescription: ""
+                    property int previewRevision: -1
+                    property int previewSampleRevision: -1
+                    onEditorRevisionChanged: if (testOutput) testOutput.text = ""
+                    function load(name) {
+                        ++presetPane.editorRevision
+                        presetName.text = name
+                        presetBody.text = controller.presetPrompt(name)
+                        tempSlider.value = controller.presetTemp(name)
+                        presetPane.errorText = ""
+                    }
+                    Connections {
+                        target: controller
+                        function onPresetsChanged() { presetPane.names = controller.presetNames() }
+                        function onPresetDraftReady(text) {
+                            presetPane.generating = false
+                            if (presetPane.draftRevision !== presetPane.editorRevision
+                                    || presetPane.draftDescription !== draftDesc.text.trim()) return
+                            presetBody.text = text
+                            presetPane.errorText = ""
+                        }
+                        function onPresetDraftFailed(message) {
+                            presetPane.generating = false
+                            if (presetPane.draftRevision !== presetPane.editorRevision
+                                    || presetPane.draftDescription !== draftDesc.text.trim()) return
+                            presetPane.errorText = message
+                        }
+                        function onPresetTestReady(text) {
+                            presetPane.testing = false
+                            if (presetPane.previewRevision !== presetPane.editorRevision
+                                    || presetPane.previewSampleRevision !== presetPane.sampleRevision) return
+                            testOutput.text = text
+                            presetPane.errorText = ""
+                        }
+                        function onPresetTestFailed(message) {
+                            presetPane.testing = false
+                            if (presetPane.previewRevision !== presetPane.editorRevision
+                                    || presetPane.previewSampleRevision !== presetPane.sampleRevision) return
+                            presetPane.errorText = message
+                        }
+                    }
                     Item { Layout.preferredHeight: 6 }
 
                     Card {
                         Layout.leftMargin: 24; Layout.rightMargin: 24
                         Header { text: "Custom style presets" }
-                        Caption { text: "Write an instruction for how to format the text. Saved presets appear in the Style dropdown." }
+                        Caption { text: "Write (or generate) an instruction for how to format the text. Saved presets appear in the Style dropdown." }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            visible: presetPane.names.length > 0
+                            spacing: 8
+                            Repeater {
+                                model: presetPane.names
+                                delegate: Rectangle {
+                                    required property string modelData
+                                    property bool sel: modelData === presetName.text
+                                    implicitHeight: 26; implicitWidth: pchip.implicitWidth + 20
+                                    radius: 13
+                                    color: sel ? Qt.rgba(win.accent.r, win.accent.g, win.accent.b, 0.18) : win.hover
+                                    border.color: sel ? win.accent : win.stroke; border.width: 1
+                                    Text {
+                                        id: pchip
+                                        anchors.centerIn: parent
+                                        text: parent.modelData; font.pixelSize: 12
+                                        color: parent.sel ? win.accent : win.txt
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: presetPane.load(parent.modelData)
+                                    }
+                                }
+                            }
+                        }
 
                         Field { text: "Preset name" }
-                        TxtField { id: presetName; placeholderText: "e.g. Formal email" }
+                        TxtField {
+                            id: presetName; placeholderText: "e.g. Formal email"
+                            onTextChanged: ++presetPane.editorRevision
+                        }
 
                         Field { text: "Instruction" }
                         ScrollView {
@@ -518,6 +823,7 @@ Window {
                             Layout.preferredHeight: 130
                             TextArea {
                                 id: presetBody
+                                onTextChanged: ++presetPane.editorRevision
                                 color: win.txt; font.pixelSize: 14
                                 wrapMode: TextArea.Wrap
                                 placeholderText: "e.g. Rewrite the text as a polite, well-structured email with a greeting and sign-off."
@@ -526,6 +832,17 @@ Window {
                             }
                         }
 
+                        Field {
+                            text: "Creativity  ·  " + tempSlider.value.toFixed(2)
+                        }
+                        Sld {
+                            id: tempSlider
+                            onValueChanged: ++presetPane.editorRevision
+                            from: 0; to: 1; stepSize: 0.05
+                            value: 0.3
+                        }
+                        Caption { text: "Temperature for this preset. Low = predictable, faithful edits; high = freer rewording. 0.1–0.3 suits most formatting styles." }
+
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 10
@@ -533,22 +850,106 @@ Window {
                                 text: "Save preset"; primary: true
                                 enabled: presetName.text.trim() !== "" && presetBody.text.trim() !== ""
                                 onClicked: {
-                                    controller.savePreset(presetName.text.trim(), presetBody.text.trim())
-                                    controller.setBeautifyStyle(presetName.text.trim())
+                                    if (controller.savePreset(presetName.text.trim(), presetBody.text.trim(), tempSlider.value)) {
+                                        controller.setBeautifyStyle(presetName.text.trim())
+                                        presetPane.errorText = ""
+                                    } else {
+                                        presetPane.errorText = "Choose a name without slashes or control characters. The names format, markdown, and summary are reserved."
+                                    }
                                 }
                             }
                             Btn {
+                                text: "New"
+                                onClicked: { ++presetPane.editorRevision; presetName.text = ""; presetBody.text = ""; tempSlider.value = 0.3 }
+                            }
+                            Btn {
                                 text: "Delete"; danger: true
-                                enabled: controller.presetNames().indexOf(presetName.text.trim()) >= 0
+                                enabled: presetPane.names.indexOf(presetName.text.trim()) >= 0
                                 onClicked: { controller.deletePreset(presetName.text.trim()); presetName.text = ""; presetBody.text = "" }
                             }
                             Item { Layout.fillWidth: true }
                         }
                     }
+
+                    Card {
+                        Layout.leftMargin: 24; Layout.rightMargin: 24
+                        Header { text: "AI assistant" }
+                        Caption { text: "Uses your Ollama model (Formatting tab) to write the instruction for you, and to preview what a preset does before you save it." }
+
+                        Field { text: "Generate from a description" }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            TxtField {
+                                id: draftDesc
+                                placeholderText: "e.g. terse commit messages in imperative mood"
+                            }
+                            Btn {
+                                text: presetPane.generating ? "Generating…" : "Generate"
+                                primary: true
+                                enabled: !presetPane.generating && draftDesc.text.trim() !== ""
+                                onClicked: {
+                                    presetPane.generating = true
+                                    presetPane.draftRevision = presetPane.editorRevision
+                                    presetPane.draftDescription = draftDesc.text.trim()
+                                    presetPane.errorText = ""
+                                    controller.generatePreset(draftDesc.text.trim())
+                                }
+                            }
+                        }
+                        Caption { text: "The draft lands in the Instruction box above — review, tweak, then save." }
+
+                        Field { text: "Try it on sample text" }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            TxtField {
+                                id: sampleField
+                                onTextChanged: {
+                                    ++presetPane.sampleRevision
+                                    testOutput.text = ""
+                                }
+                                placeholderText: "e.g. um so basically we need to fix the login bug before friday"
+                            }
+                            Btn {
+                                text: presetPane.testing ? "Testing…" : "Test"
+                                enabled: !presetPane.testing && presetBody.text.trim() !== "" && sampleField.text.trim() !== ""
+                                onClicked: {
+                                    presetPane.testing = true
+                                    presetPane.previewRevision = presetPane.editorRevision
+                                    presetPane.previewSampleRevision = presetPane.sampleRevision
+                                    presetPane.errorText = ""
+                                    testOutput.text = ""
+                                    controller.testPreset(presetBody.text.trim(), tempSlider.value, sampleField.text.trim())
+                                }
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            visible: testOutput.text !== ""
+                            radius: 10
+                            color: win.field
+                            border.color: win.stroke; border.width: 1
+                            implicitHeight: testOutput.implicitHeight + 24
+                            TextEdit {
+                                id: testOutput
+                                anchors.fill: parent; anchors.margins: 12
+                                readOnly: true; selectByMouse: true
+                                wrapMode: TextEdit.Wrap
+                                color: win.txt; font.pixelSize: 13
+                                selectionColor: win.accent
+                            }
+                        }
+                        Caption {
+                            visible: presetPane.errorText !== ""
+                            text: presetPane.errorText
+                            color: win.danger
+                        }
+                    }
                     Item { Layout.fillHeight: true; Layout.preferredHeight: 8 }
                 }
 
-                // ========================================== 4 · OVERLAY ====
+                // ========================================== 5 · OVERLAY ====
                 ColumnLayout {
                     width: parent.width
                     spacing: 16
@@ -570,7 +971,7 @@ Window {
                     Item { Layout.fillHeight: true; Layout.preferredHeight: 8 }
                 }
 
-                // ========================================= 5 · HARDWARE ====
+                // ========================================= 6 · HARDWARE ====
                 ColumnLayout {
                     id: hwPane
                     width: parent.width
@@ -587,7 +988,7 @@ Window {
                     Component.onCompleted: refresh(false)
                     Connections {
                         target: win
-                        function onPaneChanged() { if (win.pane === 5) hwPane.refresh(false) }
+                        function onPaneChanged() { if (win.pane === 6) hwPane.refresh(false) }
                     }
                     Connections {
                         target: controller
@@ -652,7 +1053,7 @@ Window {
                     Item { Layout.fillHeight: true; Layout.preferredHeight: 8 }
                 }
 
-                // ========================================== 6 · UPDATES ====
+                // ========================================== 7 · UPDATES ====
                 ColumnLayout {
                     width: parent.width
                     spacing: 16

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util/Vad.h"
+
 #include <QAudioFormat>
 #include <QByteArray>
 #include <QObject>
@@ -22,9 +24,15 @@ public:
     const QVector<float> &pcm() const { return m_pcm; }
     int sampleRate() const { return m_activeFormat.sampleRate(); }
 
+    // Voice activity over the current/most recent capture (state persists
+    // after stop() so the finalize path can still consult it).
+    bool hasSpeech() const { return m_vad.hasSpeech(); }
+    double silenceMs() const { return m_vad.silenceMs(); }
+
 public slots:
     void start();
     void stop();
+    void setGain(qreal gain);   // display scale only; applies live to the meter
 
 signals:
     void levelChanged(qreal level);   // 0..1, smoothed for display
@@ -39,6 +47,8 @@ private:
     QAudioSource *m_source = nullptr;
     QIODevice *m_io = nullptr;
     QVector<float> m_pcm;
+    scrybe::Vad m_vad;
     qreal m_displayLevel = 0.0;
+    qreal m_gain = 9.0;            // audio/gain setting, re-read every start()
     bool m_limitNotified = false;
 };

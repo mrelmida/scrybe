@@ -6,12 +6,18 @@
 #include "stt/Models.h"
 #include "stt/SttEngine.h"
 #include "util/PythonEnv.h"
+#include "util/Text.h"
 #include "update/Updater.h"
 #include "util/Terminal.h"
 
+#include <QAudioDevice>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMediaDevices>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -127,10 +133,26 @@ Controller::Controller(QObject *parent) : QObject(parent) {
         emit notify(msg + tr(" — pasting raw text."));
         finish();   // m_transcript still holds the raw text
     });
+    // Preset editor helpers (settings UI) — just forwarded, no state involved.
+    connect(m_llm, &LlmBeautifier::draftDone, this, &Controller::presetDraftReady);
+    connect(m_llm, &LlmBeautifier::draftFailed, this, &Controller::presetDraftFailed);
+    connect(m_llm, &LlmBeautifier::previewDone, this, &Controller::presetTestReady);
+    connect(m_llm, &LlmBeautifier::previewFailed, this, &Controller::presetTestFailed);
 
     m_partialTimer = new QTimer(this);
     m_partialTimer->setInterval(kPartialIntervalMs);
     connect(m_partialTimer, &QTimer::timeout, this, &Controller::requestPartial);
+
+    // Hands-free finalize: once the user has spoken and then stayed silent for
+    // the configured span, send as if they pressed Enter.
+    m_autoSendTimer = new QTimer(this);
+    m_autoSendTimer->setInterval(250);
+    connect(m_autoSendTimer, &QTimer::timeout, this, [this]() {
+        const double secs = autoSendSecs();
+        if (m_state == Listening && secs > 0.0 && m_audio->hasSpeech() &&
+            m_audio->silenceMs() >= secs * 1000.0)
+            stopListening();
+    });
 
     // Unload the model after a grace period of inactivity to free the iGPU/RAM.
     m_unloadTimer = new QTimer(this);
@@ -314,6 +336,98 @@ void Controller::setBeautifyStyle(const QString &s) {
     m_beautifyStyle = s;
     QSettings().setValue(QStringLiteral("llm/style"), s);
     emit beautifyStyleChanged();
+}
+
+QString Controller::micDevice() const {
+    return QSettings().value(QStringLiteral("audio/device"), QString()).toString();
+}
+
+void Controller::setMicDevice(const QString &id) {
+    if (micDevice() == id) return;
+    QSettings().setValue(QStringLiteral("audio/device"), id);
+    emit micDeviceChanged();
+}
+
+qreal Controller::micGain() const {
+    return QSettings().value(QStringLiteral("audio/gain"), 9.0).toDouble();
+}
+
+void Controller::setMicGain(qreal g) {
+    g = qBound(1.0, g, 25.0);
+    if (qFuzzyCompare(micGain(), g)) return;
+    QSettings().setValue(QStringLiteral("audio/gain"), g);
+    m_audio->setGain(g);   // live: the settings meter reacts while dragging
+    emit micGainChanged();
+}
+
+bool Controller::vadEnabled() const {
+    return QSettings().value(QStringLiteral("stt/vad"), true).toBool();
+}
+
+void Controller::setVadEnabled(bool on) {
+    if (vadEnabled() == on) return;
+    QSettings().setValue(QStringLiteral("stt/vad"), on);
+    emit vadEnabledChanged();
+}
+
+qreal Controller::autoSendSecs() const {
+    return QSettings().value(QStringLiteral("stt/autoSendSecs"), 0.0).toDouble();
+}
+
+void Controller::setAutoSendSecs(qreal secs) {
+    secs = qBound(0.0, secs, 10.0);
+    if (qFuzzyCompare(1.0 + autoSendSecs(), 1.0 + secs)) return;
+    QSettings().setValue(QStringLiteral("stt/autoSendSecs"), secs);
+    emit autoSendSecsChanged();
+}
+
+QString Controller::llmModel() const {
+    return QSettings().value(QStringLiteral("llm/model"), QStringLiteral("qwen2.5:1.5b")).toString();
+}
+
+void Controller::setLlmModel(const QString &m) {
+    const QString v = m.trimmed();
+    if (v.isEmpty() || llmModel() == v) return;
+    QSettings().setValue(QStringLiteral("llm/model"), v);
+    emit llmModelChanged();
+}
+
+QString Controller::llmEndpoint() const {
+    return QSettings().value(QStringLiteral("llm/endpoint"),
+                             QStringLiteral("http://localhost:11434")).toString();
+}
+
+void Controller::setLlmEndpoint(const QString &e) {
+    const QString v = e.trimmed().isEmpty() ? QStringLiteral("http://localhost:11434")
+                                             : e.trimmed();
+    if (llmEndpoint() == v) return;
+    QSettings().setValue(QStringLiteral("llm/endpoint"), v);
+    // The cached reachability/model list belongs to the old endpoint.
+    m_llmAvail = -1;
+    m_llmModels.clear();
+    emit llmEndpointChanged();
+    probeLlm(false);   // re-check the new endpoint right away
+}
+
+QVariantList Controller::micDeviceList() const {
+    QVariantList out;
+    out.append(QVariantMap{{QStringLiteral("key"), QString()},
+                           {QStringLiteral("label"), tr("System default")}});
+    for (const QAudioDevice &d : QMediaDevices::audioInputs())
+        out.append(QVariantMap{{QStringLiteral("key"), QString::fromLatin1(d.id().toBase64())},
+                               {QStringLiteral("label"), d.description()}});
+    return out;
+}
+
+// Starts the real AudioCapture purely to drive the settings "level" meter —
+// guarded to Idle so it can't step on an in-progress recording.
+void Controller::startMicPreview() {
+    if (m_state != Idle) return;
+    m_audio->start();
+}
+
+void Controller::stopMicPreview() {
+    if (m_state == Idle) m_audio->stop();
 }
 
 void Controller::setSettingsOpen(bool on) {
@@ -517,6 +631,59 @@ void Controller::installBackend(const QString &key) {
         emit notify(tr("No terminal found. Install '%1' via build-and-setup.sh.").arg(key));
 }
 
+QVariantMap Controller::llmProbeInfo() const {
+    QVariantList models;
+    for (const QString &m : m_llmModels)
+        models.append(m);
+    return QVariantMap{
+        {QStringLiteral("checking"), m_probingLlm},
+        {QStringLiteral("available"), m_llmAvail == 1},
+        {QStringLiteral("models"), models},
+    };
+}
+
+// Queries Ollama's /api/tags for reachability + the list of pulled models, so
+// the settings UI can offer a picker instead of a blind text field. Cached
+// like the STT backend probes; pass force=true (e.g. after an endpoint edit)
+// to re-check.
+void Controller::probeLlm(bool force) {
+    if (force && !m_probingLlm)
+        m_llmAvail = -1;
+    if (m_llmAvail >= 0 || m_probingLlm)
+        return;
+
+    m_probingLlm = true;
+    emit llmProbeChanged();   // let the UI show "checking…" immediately
+    if (!m_llmNam)
+        m_llmNam = new QNetworkAccessManager(this);
+
+    const QString probedEndpoint = llmEndpoint();
+    QNetworkRequest req{QUrl(probedEndpoint + QStringLiteral("/api/tags"))};
+    req.setTransferTimeout(3000);
+    QNetworkReply *reply = m_llmNam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, probedEndpoint]() {
+        reply->deleteLater();
+        m_probingLlm = false;
+        if (probedEndpoint != llmEndpoint()) {
+            probeLlm(false);   // endpoint changed mid-flight — this result is stale
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            m_llmAvail = 0;
+            m_llmModels.clear();
+            emit llmProbeChanged();
+            return;
+        }
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+        QStringList names;
+        for (const QJsonValue &v : obj.value(QStringLiteral("models")).toArray())
+            names << v.toObject().value(QStringLiteral("name")).toString();
+        m_llmModels = names;
+        m_llmAvail = 1;
+        emit llmProbeChanged();
+    });
+}
+
 QStringList Controller::presetNames() const {
     QSettings s;
     s.beginGroup(QStringLiteral("presets"));
@@ -527,18 +694,38 @@ QString Controller::presetPrompt(const QString &name) const {
     return QSettings().value(QStringLiteral("presets/") + name).toString();
 }
 
-void Controller::savePreset(const QString &name, const QString &prompt) {
+double Controller::presetTemp(const QString &name) const {
+    return QSettings().value(QStringLiteral("presetTemps/") + name, 0.3).toDouble();
+}
+
+bool Controller::savePreset(const QString &name, const QString &prompt,
+                            double temp) {
     const QString n = name.trimmed();
-    if (n.isEmpty()) return;
-    QSettings().setValue(QStringLiteral("presets/") + n, prompt);
+    if (!scrybe::validPresetName(n) || prompt.trimmed().isEmpty())
+        return false;
+    QSettings s;
+    s.setValue(QStringLiteral("presets/") + n, prompt);
+    s.setValue(QStringLiteral("presetTemps/") + n, qBound(0.0, temp, 1.0));
     emit presetsChanged();
+    return true;
 }
 
 void Controller::deletePreset(const QString &name) {
-    QSettings().remove(QStringLiteral("presets/") + name);
+    QSettings s;
+    s.remove(QStringLiteral("presets/") + name);
+    s.remove(QStringLiteral("presetTemps/") + name);
     if (m_beautifyStyle == name)
         setBeautifyStyle(QStringLiteral("format"));
     emit presetsChanged();
+}
+
+void Controller::generatePreset(const QString &description) {
+    m_llm->draftPreset(description);
+}
+
+void Controller::testPreset(const QString &prompt, double temp,
+                            const QString &sample) {
+    m_llm->preview(sample, prompt, temp);
 }
 
 void Controller::toggle() {
@@ -559,12 +746,17 @@ void Controller::startListening() {
     m_audio->start();
     if (m_previewEnabled)
         m_partialTimer->start();  // live preview only when enabled
+    m_autoSendTimer->start();
     emit requestShow();
 }
 
 // Rolling partial transcription so text appears live while speaking.
 void Controller::requestPartial() {
     if (m_state != Listening || m_sttBusy || !m_previewEnabled)
+        return;
+    // Nothing but ambience so far: don't transcribe it — Whisper hallucinates
+    // fillers ("Thank you", "you") on silence, and the compute is wasted.
+    if (vadEnabled() && !m_audio->hasSpeech())
         return;
     const int rate = m_audio->sampleRate();
     const QVector<float> &pcm = m_audio->pcm();
@@ -582,6 +774,7 @@ void Controller::requestPartial() {
 void Controller::stopListening() {
     if (m_state != Listening) return;
     m_partialTimer->stop();
+    m_autoSendTimer->stop();
     m_stt->setDropPartials(true);   // a queued preview must not delay the final
     m_audio->stop();
     setLevel(0.0);
@@ -590,6 +783,14 @@ void Controller::stopListening() {
     const int rate = m_audio->sampleRate();
     if (rate > 0 && pcm.size() < rate / 4) {   // < 0.25s captured
         emit notify(tr("Too short — nothing captured."));
+        setState(Idle);
+        emit requestHide();
+        scheduleUnload();
+        return;
+    }
+    if (vadEnabled() && !m_audio->hasSpeech()) {
+        // Whisper would only hallucinate on pure ambience — skip the pass.
+        emit notify(tr("No speech detected."));
         setState(Idle);
         emit requestHide();
         scheduleUnload();
@@ -610,6 +811,7 @@ void Controller::cancel() {
     if (m_state == Idle)
         return;
     m_partialTimer->stop();
+    m_autoSendTimer->stop();
     m_stt->setDropPartials(true);
     m_audio->stop();
     m_cancelled = true;   // ignore any in-flight STT result
