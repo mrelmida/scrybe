@@ -160,7 +160,7 @@ private:
     void setLevel(qreal v);
     void setTranscript(const QString &t);
     void onTranscript(const QString &text, bool isFinal, quint64 session, quint64 request);
-    void finish();                            // brief Pasting state → Idle
+    void finish();                            // Pasting until clipboard transaction completes
     void requestPartial();                    // rolling live transcription
     QString device() const;
     QString activeBackend() const;            // resolves "auto" to a real backend
@@ -191,6 +191,8 @@ private:
     bool m_sttBusy = false;   // a transcription is in flight
     quint64 m_session = 0;    // invalidates callbacks across cancel/restart
     quint64 m_sttRequest = 0; // only this request can clear the busy flag
+    quint64 m_pasteRequest = 0;
+    quint64 m_pasteSession = 0;
     bool m_modelReady = false;
     bool m_modelLoading = false;
     bool m_previewEnabled = true;

@@ -2,6 +2,7 @@
 #include "stt/SttEngine.h"
 #include "stt/SttBackend.h"
 #include "llm/LlmBeautifier.h"
+#include "paste/Paster.h"
 #include <QSignalSpy>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -66,6 +67,39 @@ private slots:
         QCOMPARE(controller.state(), Controller::Pasting);
         QCOMPARE(controller.transcript(), QStringLiteral("new formatted text"));
         controller.cancel(); // stop the real paste timer before it can run
+    }
+    void pasteCompletionMustMatchSessionAndTransaction() {
+        Controller controller;
+        controller.m_session = 2;
+        controller.m_pasteSession = 2;
+        controller.m_pasteRequest = 42;
+        controller.setState(Controller::Pasting);
+        emit controller.m_paster->finished(41, true);
+        QCOMPARE(controller.state(), Controller::Pasting);
+        controller.m_pasteSession = 1;
+        emit controller.m_paster->finished(42, true);
+        QCOMPARE(controller.state(), Controller::Pasting);
+        controller.m_pasteSession = 2;
+        emit controller.m_paster->finished(42, false);
+        QCOMPARE(controller.state(), Controller::Idle);
+        QCOMPARE(controller.m_pasteRequest, quint64(0));
+    }
+    void cancelAlsoCancelsDispatchedPaste() {
+        Controller controller;
+        controller.m_session = 1;
+        controller.m_pasteSession = 1;
+        controller.setState(Controller::Pasting);
+        const auto request = controller.m_paster->paste(QStringLiteral("cancelled"));
+        controller.m_pasteRequest = request;
+        QSignalSpy completed(controller.m_paster, &Paster::finished);
+        controller.cancel(); // before event loop can launch clipboard helper
+        QCOMPARE(completed.size(), 1);
+        QCOMPARE(completed.first().at(0).toULongLong(), request);
+        QVERIFY(!completed.first().at(1).toBool());
+        QCOMPARE(controller.m_pasteRequest, quint64(0));
+        controller.setState(Controller::Listening);
+        emit controller.m_paster->finished(request, true);
+        QCOMPARE(controller.state(), Controller::Listening);
     }
     void cancelDuringPasteDelayPreservesNextRecording() {
         Controller controller;

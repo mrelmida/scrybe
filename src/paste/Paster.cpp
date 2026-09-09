@@ -103,7 +103,7 @@ void Paster::startNext() {
         helper->deleteLater();
     });
     connect(helper, &QProcess::finished, this, [this, helper, id](int, QProcess::ExitStatus) {
-        if (active(id)) {
+        if (active(id) && !m_active->completionRequested) {
             emit error(tr("The clipboard helper stopped before paste completed."));
             complete(false);
         }
