@@ -131,6 +131,12 @@ Speech models download on first use (pick one in the tray → **Speech model**),
 scripts/download-model.sh turbo   # tiny|base|small|medium|turbo|large-v3|distil
 ```
 
+An OpenVINO model is considered downloaded only when its directory contains `.complete`.
+Unmarked legacy or interrupted downloads are revalidated by Hugging Face on the
+next recording; existing files are kept so the download can resume. This may
+require a network connection. The selected OpenVINO model is prepared on the
+next recording.
+
 | Key | Model | Notes |
 |---|---|---|
 | `tiny` | whisper-tiny | fastest, least accurate |

@@ -5,6 +5,8 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDeadlineTimer>
+#include <QJsonParseError>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -29,18 +31,22 @@ QString sidecarPath() {
 }
 } // namespace
 
-FasterWhisperBackend::FasterWhisperBackend() = default;
+FasterWhisperBackend::FasterWhisperBackend(const QString &scriptOverride, int requestTimeoutMs,
+                                           const QString &pythonOverride)
+    : m_scriptOverride(scriptOverride), m_pythonOverride(pythonOverride),
+      m_requestTimeoutMs(requestTimeoutMs) {}
 FasterWhisperBackend::~FasterWhisperBackend() { unload(); }
 
 QString FasterWhisperBackend::readLine(int timeoutMs, QString *err) {
-    // Accumulate stdout until a newline (the sidecar writes one JSON per line).
+    // One total deadline: partial stdout must not reset the request timeout.
+    QDeadlineTimer deadline(timeoutMs);
     while (!m_proc->canReadLine()) {
         if (m_proc->state() == QProcess::NotRunning) {
             *err = QStringLiteral("sidecar exited: %1")
                        .arg(QString::fromUtf8(m_proc->readAllStandardError()));
             return QString();
         }
-        if (!m_proc->waitForReadyRead(timeoutMs)) {
+        if (deadline.hasExpired() || !m_proc->waitForReadyRead(int(deadline.remainingTime()))) {
             *err = QStringLiteral("sidecar timed out.");
             return QString();
         }
@@ -52,7 +58,7 @@ bool FasterWhisperBackend::load(const QString &model, const QString &device,
                                 QString *effectiveDevice, QString *err) {
     unload();
 
-    const QString script = sidecarPath();
+    const QString script = m_scriptOverride.isEmpty() ? sidecarPath() : m_scriptOverride;
     if (!QFileInfo::exists(script)) {
         *err = QStringLiteral("faster-whisper sidecar not found at %1.").arg(script);
         return false;
@@ -65,7 +71,7 @@ bool FasterWhisperBackend::load(const QString &model, const QString &device,
     else dev = QStringLiteral("auto");
 
     m_proc = new QProcess();
-    m_proc->setProgram(scrybe::pythonExecutable());
+    m_proc->setProgram(m_pythonOverride.isEmpty() ? scrybe::pythonExecutable() : m_pythonOverride);
     m_proc->setArguments({script, QStringLiteral("--model"), model,
                           QStringLiteral("--device"), dev});
     m_proc->start();
@@ -86,10 +92,18 @@ bool FasterWhisperBackend::load(const QString &model, const QString &device,
         return false;
     }
     *effectiveDevice = obj.value(QStringLiteral("device")).toString(dev);
+    m_loadedModel = model;
+    m_loadedDevice = device;
     return true;
 }
 
 void FasterWhisperBackend::unload() {
+    m_loadedModel.clear();
+    m_loadedDevice.clear();
+    stopProcess();
+}
+
+void FasterWhisperBackend::stopProcess() {
     if (!m_proc)
         return;
     m_proc->closeWriteChannel();
@@ -104,8 +118,22 @@ bool FasterWhisperBackend::transcribe(const std::vector<float> &pcm16k,
                                       const QString &language, QString *text,
                                       QString *err) {
     if (!m_proc || m_proc->state() == QProcess::NotRunning) {
-        *err = QStringLiteral("faster-whisper sidecar is not running.");
-        return false;
+        if (m_loadedModel.isEmpty()) {
+            *err = QStringLiteral("faster-whisper sidecar is not running.");
+            return false;
+        }
+        // A timed-out process has been discarded; start a fresh protocol
+        // stream before accepting another request.
+        const QString model = m_loadedModel, device = m_loadedDevice;
+        QString effective;
+        if (!load(model, device, &effective, err)) {
+            // Explicit load/unload clear residency, but a transient automatic
+            // restart failure must retain the last successful configuration
+            // so a later preview/final can retry a fresh process.
+            m_loadedModel = model;
+            m_loadedDevice = device;
+            return false;
+        }
     }
     // Header line with the payload size, then the raw float32 samples (avoids
     // the +33% base64 overhead and an extra copy on both sides).
@@ -116,14 +144,35 @@ bool FasterWhisperBackend::transcribe(const std::vector<float> &pcm16k,
         {QStringLiteral("language"), language.isEmpty() ? QStringLiteral("auto")
                                                         : language},
     };
-    m_proc->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + '\n');
-    m_proc->write(raw);
-    m_proc->waitForBytesWritten(5000);
-
-    const QString line = readLine(120000, err);
-    if (line.isEmpty())
+    QDeadlineTimer deadline(m_requestTimeoutMs);
+    const QByteArray header = QJsonDocument(req).toJson(QJsonDocument::Compact) + '\n';
+    if (m_proc->write(header) != header.size() || m_proc->write(raw) != raw.size()) {
+        *err = QStringLiteral("could not send audio to the sidecar.");
+        stopProcess();
         return false;
-    const QJsonObject obj = QJsonDocument::fromJson(line.toUtf8()).object();
+    }
+    while (m_proc->bytesToWrite() > 0) {
+        if (deadline.hasExpired() || !m_proc->waitForBytesWritten(int(deadline.remainingTime()))) {
+            *err = QStringLiteral("sidecar timed out while receiving audio.");
+            stopProcess();
+            return false;
+        }
+    }
+
+    const QString line = readLine(int(deadline.remainingTime()), err);
+    if (line.isEmpty()) {
+        stopProcess(); // never let a late response satisfy the next request
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(line.toUtf8(), &parseError);
+    const QJsonObject obj = document.object();
+    if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+        (!obj.contains(QStringLiteral("error")) && !obj.value(QStringLiteral("text")).isString())) {
+        *err = QStringLiteral("sidecar returned an invalid transcription response.");
+        stopProcess();
+        return false;
+    }
     if (obj.contains(QStringLiteral("error"))) {
         *err = obj.value(QStringLiteral("error")).toString();
         return false;

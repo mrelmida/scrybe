@@ -1,4 +1,5 @@
 #include "Controller.h"
+#include "ModelDownloader.h"
 
 #include "audio/AudioCapture.h"
 #include "llm/LlmBeautifier.h"
@@ -36,11 +37,6 @@ constexpr int kPartialIntervalMs = 900;   // how often to refresh live text
 constexpr double kMinPartialSecs = 0.5;   // don't transcribe less than this
 constexpr int kUnloadIdleMs = 20000;      // unload model after 20s idle
 constexpr int kPartialWindowSecs = 25;    // preview transcribes at most this much
-
-// Marker written after a model download completes. `snapshot_download` creates
-// the directory before it finishes, so the directory alone doesn't prove the
-// files are all there (an interrupted download would look "installed" forever).
-constexpr char kCompleteMarker[] = ".complete";
 
 QString modelsRoot() {
     // ~/.local/share/scrybe/models  (matches scripts/download-model.sh)
@@ -84,12 +80,27 @@ Gpus detectGpus() {
 }
 } // namespace
 
-Controller::Controller(QObject *parent) : QObject(parent) {
-    m_audio = new AudioCapture(this);
+Controller::Controller(QObject *parent, AudioCapture *audio, ModelDownloader *downloader)
+    : QObject(parent) {
+    m_audio = audio ? audio : new AudioCapture;
+    m_audio->setParent(this);
     connect(m_audio, &AudioCapture::levelChanged, this, &Controller::setLevel);
     connect(m_audio, &AudioCapture::error, this,
-            [this](const QString &msg) { emit notify(msg); });
+            [this](const QString &msg) {
+        if (m_micPreviewActive) {
+            m_micPreviewActive = false;
+            emit micPreviewActiveChanged();
+        }
+        m_audio->stop();
+        if (active()) cancel();
+        setLevel(0.0);
+        emit notify(msg);
+    });
     connect(m_audio, &AudioCapture::limitReached, this, [this]() {
+        if (m_micPreviewActive) {
+            stopMicPreview();
+            return;
+        }
         emit notify(tr("Recording limit reached — finalizing."));
         stopListening();
     });
@@ -99,13 +110,9 @@ Controller::Controller(QObject *parent) : QObject(parent) {
             [this](const QString &text, const QString &, bool isFinal, quint64 session, quint64 request) {
                 onTranscript(text, isFinal, session, request);
             });
-    connect(m_stt, &SttEngine::error, this, [this](const QString &msg) {
-        m_modelLoading = false;
-        emit notify(msg);
-        if (m_state == Transcribing || m_state == Beautifying) {
-            setState(Idle);
-            emit requestHide();
-        }
+    connect(m_stt, &SttEngine::error, this, [this](const QString &msg, quint64 generation) {
+        if (generation == m_modelGeneration)
+            modelFailed(msg);
     });
     connect(m_stt, &SttEngine::transcriptionFailed, this,
             [this](const QString &message, bool isFinal, quint64 session, quint64 request) {
@@ -121,11 +128,28 @@ Controller::Controller(QObject *parent) : QObject(parent) {
         emit requestHide();
         scheduleUnload();
     });
-    connect(m_stt, &SttEngine::ready, this, [this](const QString &dev) {
+    connect(m_stt, &SttEngine::ready, this, [this](const QString &dev, quint64 generation) {
+        if (generation != m_modelGeneration) return;
         m_modelReady = true;
         m_modelLoading = false;
         emit modelReadyChanged();
         emit notify(tr("Speech model ready (%1).").arg(dev));
+        dispatchPendingFinal();
+        if (m_state == Idle) scheduleUnload();
+    });
+
+
+    m_downloader = downloader ? downloader : new ModelDownloader;
+    m_downloader->setParent(this);
+    connect(m_downloader, &ModelDownloader::finished, this,
+            [this](bool ok, const QString &message, quint64 generation) {
+        if (generation != m_modelGeneration || !m_modelLoading) return;
+        if (!ok) {
+            modelFailed(message);
+            return;
+        }
+        m_stt->load(m_modelConfig[0], modelDirFor(m_modelConfig[1]),
+                    m_modelConfig[2], generation);
     });
 
     m_paster = new Paster(this);
@@ -174,10 +198,7 @@ Controller::Controller(QObject *parent) : QObject(parent) {
     m_unloadTimer->setInterval(kUnloadIdleMs);
     connect(m_unloadTimer, &QTimer::timeout, this, [this]() {
         if (m_state == Idle && (m_modelReady || m_modelLoading)) {
-            m_stt->unload();
-            m_modelReady = false;
-            m_modelLoading = false;
-            emit modelReadyChanged();
+            invalidateModel();
         }
     });
 
@@ -219,78 +240,64 @@ QString Controller::modelDirFor(const QString &key) const {
     return QDir(modelsRoot()).filePath(scrybe::modelSubdir(key));
 }
 
-// Ensure the model files exist on disk (downloading in the background if not),
-// then invoke cb(success). cb runs immediately if already present. A directory
-// without the completion marker is a previously interrupted download; the
-// snapshot download resumes it.
-void Controller::ensureDownloaded(const QString &key, std::function<void(bool)> cb) {
-    const QString dir = modelDirFor(key);
-    const QString marker = QDir(dir).filePath(QString::fromLatin1(kCompleteMarker));
-    if (QFileInfo::exists(marker)) {
-        cb(true);
-        return;
-    }
-    // Pre-marker installs: a dir that already holds the IR files is complete —
-    // adopt it rather than forcing a re-download (which would fail offline).
-    const QDir d(dir);
-    if (d.exists() &&
-        !d.entryList({QStringLiteral("*.xml")}, QDir::Files).isEmpty() &&
-        !d.entryList({QStringLiteral("*.bin")}, QDir::Files).isEmpty()) {
-        QFile f(marker);
-        if (f.open(QIODevice::WriteOnly))
-            f.write(QByteArray("adopted existing download\n"));
-        cb(true);
-        return;
-    }
-    emit notify(tr("Downloading model '%1'…").arg(key));
-    auto *p = new QProcess(this);
-    p->setProgram(scrybe::pythonExecutable());
-    // Repo and path travel as argv, not interpolated into the code string.
-    p->setArguments({QStringLiteral("-c"),
-        QStringLiteral("import sys\n"
-                       "from huggingface_hub import snapshot_download\n"
-                       "snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2],"
-                       "allow_patterns=['*.xml','*.bin','*.json','*.txt'])"),
-        scrybe::modelRepo(key), dir});
-    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, p, dir, marker, key, cb](int code, QProcess::ExitStatus st) {
-                p->deleteLater();
-                const bool ok = (st == QProcess::NormalExit && code == 0 &&
-                                 QFileInfo::exists(dir));
-                if (ok) {
-                    QFile f(marker);
-                    if (f.open(QIODevice::WriteOnly))
-                        f.write(QByteArray("downloaded by scrybe\n"));
-                    emit notify(tr("Model '%1' downloaded.").arg(key));
-                } else {
-                    emit notify(tr("Download failed for '%1'.").arg(key));
-                }
-                cb(ok);
-            });
-    p->start();
+void Controller::clearPendingFinal() {
+    m_pendingFinal.clear();
+    m_pendingRate = 0;
+    m_pendingSession = 0;
 }
 
-// Load the current model into memory if it isn't already (called at record start
-// so loading overlaps with the user speaking).
-void Controller::ensureModelLoaded() {
-    if (m_modelReady || m_modelLoading)
-        return;
-    m_modelLoading = true;
-    const QString backend = activeBackend();
-    const QString key = m_model;
+void Controller::invalidateModel(bool stopRecording) {
+    if (stopRecording && active()) cancel();
+    ++m_modelGeneration;
+    m_stt->setModelGeneration(m_modelGeneration);
+    m_downloader->cancel();
+    m_stt->unload(m_modelGeneration);
+    m_modelReady = false;
+    m_modelLoading = false;
+    m_modelConfig.clear();
+    clearPendingFinal();
+    emit modelReadyChanged();
+}
 
-    if (backend == QLatin1String("openvino")) {
-        // OpenVINO uses pre-converted IR on disk; fetch it if missing.
-        ensureDownloaded(key, [this, backend, key](bool ok) {
-            if (!ok) { m_modelLoading = false; return; }
-            m_stt->load(backend, modelDirFor(key), device());
-        });
-    } else if (backend == QLatin1String("faster-whisper")) {
-        // The sidecar downloads the CT2 model itself.
-        m_stt->load(backend, scrybe::fasterWhisperModel(key), device());
-    } else { // whispercpp: the server owns the model
-        m_stt->load(backend, key, device());
+void Controller::modelFailed(const QString &message) {
+    invalidateModel();
+    m_sttBusy = false;
+    m_sttRequest = 0;
+    if (!message.isEmpty()) emit notify(message);
+    scheduleUnload();
+}
+
+// Model lifetime is independent of a recording: cancellation can reuse a load
+// in progress, while changing model/backend/device invalidates its callbacks.
+void Controller::ensureModelLoaded() {
+    const QStringList config{activeBackend(), m_model, device()};
+    if (config != m_modelConfig) {
+        // Usually settings changes already invalidated the model. Also detect
+        // external device/config edits when the next recording starts.
+        if (!m_modelConfig.isEmpty()) invalidateModel(false);
+        m_modelConfig = config;
     }
+    if (m_modelReady || m_modelLoading) return;
+    m_modelLoading = true;
+    const QString &backend = config[0];
+    const QString &key = config[1];
+    if (backend == QLatin1String("openvino")) {
+        emit notify(tr("Preparing model '%1'…").arg(key));
+        m_downloader->ensure(modelDirFor(key), scrybe::modelRepo(key), m_modelGeneration);
+    } else {
+        m_stt->load(backend, backend == QLatin1String("faster-whisper")
+                                ? scrybe::fasterWhisperModel(key) : key,
+                    config[2], m_modelGeneration);
+    }
+}
+
+void Controller::dispatchPendingFinal() {
+    if (!m_modelReady || m_state != Transcribing || m_pendingSession != m_session ||
+        m_pendingFinal.isEmpty()) return;
+    m_sttBusy = true;
+    m_sttRequest = m_stt->transcribe(m_pendingFinal, m_pendingRate, m_language,
+                                    /*isFinal=*/true, m_session);
+    clearPendingFinal();
 }
 
 void Controller::scheduleUnload() {
@@ -303,14 +310,9 @@ void Controller::setModel(const QString &key) {
     m_model = key;
     QSettings().setValue(QStringLiteral("stt/model"), key);
     // Drop the old model; the new one loads on the next recording.
-    m_stt->unload();
-    m_modelReady = false;
-    m_modelLoading = false;
-    emit modelReadyChanged();
+    invalidateModel();
     emit modelChanged();
     emit notify(tr("Model set to '%1' (loads on next recording).").arg(key));
-    if (activeBackend() == QLatin1String("openvino"))
-        ensureDownloaded(key, [](bool) {});   // pre-fetch OpenVINO IR
 }
 
 void Controller::setPreviewEnabled(bool on) {
@@ -358,6 +360,7 @@ QString Controller::micDevice() const {
 
 void Controller::setMicDevice(const QString &id) {
     if (micDevice() == id) return;
+    stopMicPreview();
     QSettings().setValue(QStringLiteral("audio/device"), id);
     emit micDeviceChanged();
 }
@@ -437,11 +440,17 @@ QVariantList Controller::micDeviceList() const {
 // guarded to Idle so it can't step on an in-progress recording.
 void Controller::startMicPreview() {
     if (m_state != Idle) return;
-    m_audio->start();
+    if (m_audio->start()) {
+        m_micPreviewActive = true;
+        emit micPreviewActiveChanged();
+    }
 }
 
 void Controller::stopMicPreview() {
-    if (m_state == Idle) m_audio->stop();
+    if (!m_micPreviewActive) return;
+    m_micPreviewActive = false;
+    m_audio->stop();
+    emit micPreviewActiveChanged();
 }
 
 void Controller::setSettingsOpen(bool on) {
@@ -458,10 +467,7 @@ QString Controller::backend() const {
 void Controller::setBackend(const QString &b) {
     if (backend() == b) return;
     QSettings().setValue(QStringLiteral("stt/backend"), b);
-    m_stt->unload();               // next recording loads via the new backend
-    m_modelReady = false;
-    m_modelLoading = false;
-    emit modelReadyChanged();
+    invalidateModel();             // next recording loads via the new backend
     emit backendChanged();
     emit notify(tr("Backend set to '%1' (applies on next recording).").arg(b));
 }
@@ -749,8 +755,10 @@ void Controller::toggle() {
 
 void Controller::startListening() {
     if (m_state != Idle) return;
+    stopMicPreview();
     m_stt->setSession(++m_session);
     m_llm->cancel();
+    clearPendingFinal();
     m_sttRequest = 0;
     m_sttBusy = false;
     m_partialTruncated = false;
@@ -758,8 +766,9 @@ void Controller::startListening() {
     m_unloadTimer->stop();
     setTranscript(QString());
     setState(Listening);
-    ensureModelLoaded();          // load now — overlaps with the user speaking
-    m_audio->start();
+    if (!m_audio->start()) return; // synchronous error handler restores Idle
+    ensureModelLoaded();          // load overlaps with the user speaking
+    if (m_state != Listening) return;
     if (m_previewEnabled)
         m_partialTimer->start();  // live preview only when enabled
     m_autoSendTimer->start();
@@ -768,7 +777,7 @@ void Controller::startListening() {
 
 // Rolling partial transcription so text appears live while speaking.
 void Controller::requestPartial() {
-    if (m_state != Listening || m_sttBusy || !m_previewEnabled)
+    if (m_state != Listening || m_sttBusy || !m_previewEnabled || !m_modelReady)
         return;
     // Nothing but ambience so far: don't transcribe it — Whisper hallucinates
     // fillers ("Thank you", "you") on silence, and the compute is wasted.
@@ -797,7 +806,7 @@ void Controller::stopListening() {
 
     const QVector<float> pcm = m_audio->pcm();
     const int rate = m_audio->sampleRate();
-    if (rate > 0 && pcm.size() < rate / 4) {   // < 0.25s captured
+    if (rate <= 0 || pcm.size() < rate / 4) {   // < 0.25s captured
         emit notify(tr("Too short — nothing captured."));
         setState(Idle);
         emit requestHide();
@@ -813,8 +822,12 @@ void Controller::stopListening() {
         return;
     }
     setState(Transcribing);
-    m_sttBusy = true;
-    m_sttRequest = m_stt->transcribe(pcm, rate, m_language, /*isFinal=*/true, m_session);
+    m_sttBusy = false;
+    m_sttRequest = 0;
+    m_pendingFinal = pcm;
+    m_pendingRate = rate;
+    m_pendingSession = m_session;
+    dispatchPendingFinal();
 }
 
 void Controller::send() {
@@ -832,6 +845,7 @@ void Controller::cancel() {
     m_audio->stop();
     m_stt->setSession(++m_session);
     m_llm->cancel();
+    clearPendingFinal();
     m_sttRequest = 0;
     m_sttBusy = false;
     setLevel(0.0);

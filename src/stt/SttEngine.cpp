@@ -15,26 +15,30 @@ SttWorker::SttWorker(SttBackendFactory factory, QObject *parent)
 SttWorker::~SttWorker() = default;
 
 void SttWorker::doLoad(const QString &backend, const QString &model,
-                       const QString &device) {
+                       const QString &device, quint64 generation) {
+    if (generation != m_modelGeneration.load())
+        return;
     if (!m_backend || m_backendType != backend) {
         m_backend = m_factory(backend);
         m_backendType = backend;
     }
     if (!m_backend) {
-        emit failed(QStringLiteral("Unknown STT backend '%1'.").arg(backend));
+        emit failed(QStringLiteral("Unknown STT backend '%1'.").arg(backend), generation);
         return;
     }
     QString effectiveDevice, err;
     if (m_backend->load(model, device, &effectiveDevice, &err))
-        emit loaded(effectiveDevice);
+        emit loaded(effectiveDevice, generation);
     else
-        emit failed(err);
+        emit failed(err, generation);
 }
 
-void SttWorker::doUnload() {
+void SttWorker::doUnload(quint64 generation) {
+    if (generation != m_modelGeneration.load())
+        return;
     if (m_backend) {
         m_backend->unload();
-        emit unloaded();
+        emit unloaded(generation);
     }
 }
 
@@ -76,13 +80,21 @@ SttEngine::SttEngine(QObject *parent, SttBackendFactory factory) : QObject(paren
     connect(this, &SttEngine::requestUnload, m_worker, &SttWorker::doUnload);
     connect(this, &SttEngine::requestTranscribe, m_worker, &SttWorker::doTranscribe);
 
-    connect(m_worker, &SttWorker::loaded, this, [this](const QString &dev) {
+    connect(m_worker, &SttWorker::loaded, this, [this](const QString &dev, quint64 generation) {
+        if (generation != m_modelGeneration) return;
         m_ready = true;
-        emit ready(dev);
+        emit ready(dev, generation);
     });
-    connect(m_worker, &SttWorker::unloaded, this, [this]() { m_ready = false; });
+    connect(m_worker, &SttWorker::unloaded, this, [this](quint64 generation) {
+        if (generation == m_modelGeneration) m_ready = false;
+    });
     connect(m_worker, &SttWorker::failed, this,
-            [this](const QString &msg) { emit error(msg); });
+            [this](const QString &msg, quint64 generation) {
+                if (generation == m_modelGeneration) {
+                    m_ready = false;
+                    emit error(msg, generation);
+                }
+            });
     connect(m_worker, &SttWorker::result, this,
             [this](const QString &text, const QString &lang, bool isFinal,
                    quint64 session, quint64 request) {
@@ -104,13 +116,20 @@ SttEngine::~SttEngine() {
 }
 
 void SttEngine::load(const QString &backend, const QString &model,
-                     const QString &device) {
-    emit requestLoad(backend, model, device);
+                     const QString &device, quint64 generation) {
+    if (generation == m_modelGeneration) m_ready = false;
+    emit requestLoad(backend, model, device, generation);
 }
 
-void SttEngine::unload() {
+void SttEngine::unload(quint64 generation) {
     m_ready = false;
-    emit requestUnload();
+    emit requestUnload(generation);
+}
+
+void SttEngine::setModelGeneration(quint64 generation) {
+    m_modelGeneration = generation;
+    m_ready = false;
+    m_worker->setModelGeneration(generation);
 }
 
 quint64 SttEngine::transcribe(const QVector<float> &pcm, int sampleRate,

@@ -4,10 +4,11 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
+#include <QVector>
 
-#include <functional>
 
 class AudioCapture;
+class ModelDownloader;
 class SttEngine;
 class Paster;
 class LlmBeautifier;
@@ -26,6 +27,7 @@ class Controller : public QObject {
     Q_PROPERTY(qreal level READ level NOTIFY levelChanged)
     Q_PROPERTY(QString transcript READ transcript NOTIFY transcriptChanged)
     Q_PROPERTY(bool llmEnabled READ llmEnabled WRITE setLlmEnabled NOTIFY llmEnabledChanged)
+    Q_PROPERTY(bool micPreviewActive READ micPreviewActive NOTIFY micPreviewActiveChanged)
     Q_PROPERTY(bool modelReady READ modelReady NOTIFY modelReadyChanged)
     Q_PROPERTY(bool previewEnabled READ previewEnabled WRITE setPreviewEnabled NOTIFY previewEnabledChanged)
     Q_PROPERTY(QString beautifyStyle READ beautifyStyle WRITE setBeautifyStyle NOTIFY beautifyStyleChanged)
@@ -46,7 +48,8 @@ public:
     enum State { Idle, Listening, Transcribing, Beautifying, Pasting };
     Q_ENUM(State)
 
-    explicit Controller(QObject *parent = nullptr);
+    explicit Controller(QObject *parent = nullptr, AudioCapture *audio = nullptr,
+                        ModelDownloader *downloader = nullptr);
 
     State state() const { return m_state; }
     QString stateName() const;
@@ -55,6 +58,7 @@ public:
     QString transcript() const { return m_transcript; }
     bool llmEnabled() const { return m_llmEnabled; }
     void setLlmEnabled(bool on);
+    bool micPreviewActive() const { return m_micPreviewActive; }
     bool modelReady() const { return m_modelReady; }
     bool previewEnabled() const { return m_previewEnabled; }
     void setPreviewEnabled(bool on);
@@ -130,6 +134,7 @@ signals:
     void transcriptChanged();
     void llmEnabledChanged();
     void modelReadyChanged();
+    void micPreviewActiveChanged();
     void previewEnabledChanged();
     void beautifyStyleChanged();
     void themeChanged();
@@ -166,7 +171,10 @@ private:
     QString activeBackend() const;            // resolves "auto" to a real backend
     QString modelDirFor(const QString &key) const;
     void ensureModelLoaded();                 // load current model if not resident
-    void ensureDownloaded(const QString &key, std::function<void(bool)> cb);
+    void invalidateModel(bool stopRecording = true);
+    void modelFailed(const QString &message);
+    void dispatchPendingFinal();
+    void clearPendingFinal();
     void scheduleUnload();                    // unload after idle grace period
 
     State m_state = Idle;
@@ -175,6 +183,8 @@ private:
     bool m_llmEnabled = false;
 
     AudioCapture *m_audio = nullptr;
+    ModelDownloader *m_downloader = nullptr;
+    bool m_micPreviewActive = false;
     SttEngine *m_stt = nullptr;
     Paster *m_paster = nullptr;
     LlmBeautifier *m_llm = nullptr;
@@ -193,6 +203,11 @@ private:
     quint64 m_sttRequest = 0; // only this request can clear the busy flag
     bool m_modelReady = false;
     bool m_modelLoading = false;
+    quint64 m_modelGeneration = 0;
+    QStringList m_modelConfig;
+    QVector<float> m_pendingFinal;
+    int m_pendingRate = 0;
+    quint64 m_pendingSession = 0;
     bool m_previewEnabled = true;
     bool m_partialTruncated = false;   // preview covered only the tail window
 

@@ -15,6 +15,9 @@ struct BackendState {
     QSemaphore release;
     std::atomic<int> calls{0};
     bool fail = false;
+    bool blockLoad = false;
+    bool loadFails = false;
+    std::atomic<int> loads{0};
     QAbstractEventDispatcher *dispatcher = nullptr;
 };
 
@@ -23,8 +26,13 @@ public:
     explicit FakeBackend(BackendState &state) : state(state) {}
     bool load(const QString &, const QString &, QString *device, QString *) override {
         state.dispatcher = QAbstractEventDispatcher::instance();
+        ++state.loads;
+        if (state.blockLoad) {
+            state.entered.release();
+            if (!state.release.tryAcquire(1, 5000)) return false;
+        }
         *device = QStringLiteral("fake");
-        return true;
+        return !state.loadFails;
     }
     void unload() override {}
     bool transcribe(const std::vector<float> &, const QString &, QString *text,
@@ -47,6 +55,32 @@ public:
 class SttSessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void staleModelLoadsAndFailuresAreIgnored_data() {
+        QTest::addColumn<bool>("fails");
+        QTest::newRow("ready") << false;
+        QTest::newRow("error") << true;
+    }
+    void staleModelLoadsAndFailuresAreIgnored() {
+        QFETCH(bool, fails);
+        BackendState state;
+        state.blockLoad = true;
+        state.loadFails = fails;
+        SttEngine engine(nullptr, [&](const QString &) { return std::make_unique<FakeBackend>(state); });
+        QSignalSpy ready(&engine, &SttEngine::ready);
+        QSignalSpy errors(&engine, &SttEngine::error);
+        engine.setModelGeneration(1);
+        engine.load("fake", "old", "cpu", 1);
+        QVERIFY(state.entered.tryAcquire(1, 1000));
+        engine.load("fake", "queued-old", "cpu", 1);
+        engine.setModelGeneration(2);
+        engine.load("fake", "new", "cpu", 2);
+        state.release.release(2);
+        QTRY_COMPARE(ready.size() + errors.size(), 1);
+        QCOMPARE(state.loads.load(), 2);
+        const auto &completion = fails ? errors[0] : ready[0];
+        QCOMPARE(completion[1].toULongLong(), quint64(2));
+        QCOMPARE(engine.isReady(), !fails);
+    }
     void cancelRestartSkipsOldQueuedWork_data() {
         QTest::addColumn<bool>("oldFails");
         QTest::newRow("old-success") << false;
@@ -55,13 +89,13 @@ private slots:
     void cancelRestartSkipsOldQueuedWork() {
         QFETCH(bool, oldFails);
         BackendState state;
-        state.fail = oldFails;
         SttEngine engine(nullptr, [&](const QString &) { return std::make_unique<FakeBackend>(state); });
         QSignalSpy ready(&engine, &SttEngine::ready);
         QSignalSpy results(&engine, &SttEngine::transcript);
         QSignalSpy errors(&engine, &SttEngine::transcriptionFailed);
         engine.load("fake", "fake", "fake");
         QTRY_COMPARE(ready.size(), 1);
+        state.fail = oldFails;
         engine.setSession(1);
         engine.transcribe({0.5f}, 16000, "auto", false, 1);
         QVERIFY(state.entered.tryAcquire(1, 1000));
