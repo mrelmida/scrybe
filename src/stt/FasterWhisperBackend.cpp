@@ -122,7 +122,14 @@ bool FasterWhisperBackend::transcribe(const std::vector<float> &pcm16k,
         // stream before accepting another request.
         const QString model = m_loadedModel, device = m_loadedDevice;
         QString effective;
-        if (!load(model, device, &effective, err)) return false;
+        if (!load(model, device, &effective, err)) {
+            // Explicit load/unload clear residency, but a transient automatic
+            // restart failure must retain the last successful configuration
+            // so a later preview/final can retry a fresh process.
+            m_loadedModel = model;
+            m_loadedDevice = device;
+            return false;
+        }
     }
     // Header line with the payload size, then the raw float32 samples (avoids
     // the +33% base64 overhead and an extra copy on both sides).
