@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(scrybe VERSION 0.2.0 LANGUAGES CXX)
+project(scrybe VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,8 @@ if(BUILD_TESTING)
 endif()
 
 if(SCRYBE_BUILD_APP)
+
+add_subdirectory(src/paste)
 
 find_package(Qt6 REQUIRED COMPONENTS Gui Qml Quick Widgets Network Multimedia)
 
@@ -99,6 +101,8 @@ qt_add_executable(scrybe
     src/update/Updater.h
     src/update/Updater.cpp
 )
+
+add_dependencies(scrybe scrybe-clipboard)
 
 target_include_directories(scrybe PRIVATE src)
 target_compile_definitions(scrybe PRIVATE SCRYBE_VERSION="${PROJECT_VERSION}")

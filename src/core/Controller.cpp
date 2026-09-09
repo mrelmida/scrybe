@@ -131,6 +131,13 @@ Controller::Controller(QObject *parent) : QObject(parent) {
     m_paster = new Paster(this);
     connect(m_paster, &Paster::error, this,
             [this](const QString &msg) { emit notify(msg); });
+    connect(m_paster, &Paster::finished, this, [this](quint64 request, bool) {
+        if (m_state != Pasting || request != m_pasteRequest || m_pasteSession != m_session)
+            return;
+        m_pasteRequest = 0;
+        setState(Idle);
+        scheduleUnload();
+    });
 
     m_updater = new Updater(this);
     connect(m_updater, &Updater::notify, this,
@@ -750,6 +757,8 @@ void Controller::toggle() {
 void Controller::startListening() {
     if (m_state != Idle) return;
     m_stt->setSession(++m_session);
+    m_pasteRequest = 0;
+    m_paster->cancel();
     m_llm->cancel();
     m_sttRequest = 0;
     m_sttBusy = false;
@@ -831,6 +840,8 @@ void Controller::cancel() {
     m_stt->setDropPartials(true);
     m_audio->stop();
     m_stt->setSession(++m_session);
+    m_pasteRequest = 0;
+    m_paster->cancel();
     m_llm->cancel();
     m_sttRequest = 0;
     m_sttBusy = false;
@@ -884,10 +895,8 @@ void Controller::finish() {
     QTimer::singleShot(220, this, [this, text, session]() {
         if (session != m_session || m_state != Pasting)
             return;
-        if (!text.isEmpty())
-            m_paster->paste(text);
-        setState(Idle);
-        scheduleUnload();
+        m_pasteSession = session;
+        m_pasteRequest = m_paster->paste(text);
     });
 }
 

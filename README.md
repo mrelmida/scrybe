@@ -50,8 +50,8 @@ and configuration are not reverted.
   **voice visualizer**, anchored to the top or bottom of the screen.
 - 📝 **Live transcription** as you speak (optional).
 - ⌨️ **Enter** to send · **Esc** to cancel.
-- 📋 **Clipboard paste** into the focused app — no simulated keystrokes; your
-  clipboard is restored afterward.
+- 📋 **Clipboard paste** into the focused app using one paste shortcut. Rich text,
+  images, and other clipboard formats are restored while Scrybe still owns the selection.
 - 🧠 **Optional LLM formatting** (local, via [Ollama](https://ollama.com)) —
   clean-up, **Markdown structuring**, **summarizing/shortening**, or your own
   **custom style presets**.
@@ -112,6 +112,25 @@ Settings live in `~/.config/scrybe/scrybe.conf` and most are exposed in the tray
 | `paste/restoreClipboard` | `true`·`false` | `true` | restore clipboard after paste |
 | `paste/restoreDelayMs` | ms | `1000` | grace period before restoring the clipboard |
 | `paste/shortcut` | `ctrl+v`·`ctrl+shift+v` | `ctrl+v` | paste shortcut (`ctrl+shift+v` for terminals) |
+
+Clipboard operations run in order. The `scrybe-clipboard` helper must be installed
+beside `scrybe`; it uses the compositor's `ext-data-control-v1` protocol, or the
+legacy `wlr-data-control` protocol, without taking keyboard focus. Clipboard
+installation must finish before the paste shortcut is sent. Restoration is
+skipped when another application takes ownership, including when its text is
+identical to the transcript. The grace period is clamped to 200–10,000 ms;
+applications that read the clipboard unusually late may need a longer setting.
+
+With restoration enabled, all offered MIME representations are saved byte for
+byte. Clipboard producers have four seconds to supply up to 64 representations
+and 16 MiB total. An unresponsive or oversized clipboard fails before replacement
+instead of silently discarding formats. Clipboard preparation and key injection
+have timeouts; cancellation also attempts to release shortcut keys. The most
+recent requested transcript remains in memory through `Paster::lastText()` for
+recovery integrations. No transcript or saved clipboard is written to disk. A helper that owns the
+clipboard keeps serving it after the app exits, and exits when another owner
+replaces the selection.
+
 | `llm/model` | Ollama model | `qwen2.5:1.5b` | cleanup model |
 | `llm/endpoint` | URL | `http://localhost:11434` | Ollama endpoint |
 | `presetTemps/<name>` | `0`–`1` | `0.3` | custom formatting preset temperature |

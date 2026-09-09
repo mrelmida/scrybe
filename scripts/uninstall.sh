@@ -19,7 +19,7 @@ pkill -x scrybe 2>/dev/null || true
 rm -f /tmp/scrybe.ipc
 
 say "Removing app, launcher, icon, and autostart"
-rm -f "$PREFIX/bin/scrybe"
+rm -f "$PREFIX/bin/scrybe" "$PREFIX/bin/scrybe-clipboard"
 rm -f "$PREFIX/bin/scrybe-rollback"
 runtime="$PREFIX/share/scrybe/runtime"
 if [[ ! -L "$runtime" && -f "$runtime/.scrybe-managed" ]]; then
