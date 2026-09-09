@@ -299,10 +299,7 @@ fi
 # ---------------------------------------------------------------------------- #
 if [[ -z "${SCRYBE_SKIP_BACKENDS:-}" ]]; then
     step "Installing alternative STT backends"
-    mkdir -p "$HOME/.local/share/scrybe/backends"
-    install -m644 "$SCRIPT_DIR/scripts/faster_whisper_sidecar.py" \
-        "$HOME/.local/share/scrybe/backends/"
-    ok "faster-whisper sidecar installed."
+    # The sidecar is published with the executable after a successful build.
 
     # Install faster-whisper (CUDA/CPU) when it's the chosen/fallback backend:
     # NVIDIA machines, or any machine where OpenVINO isn't being installed (the
@@ -349,19 +346,18 @@ if [[ -z "${SCRYBE_SKIP_BUILD:-}" ]]; then
         [[ -n "${OpenVINOGenAI_DIR:-}" ]] && cmake_args+=(-DOpenVINOGenAI_DIR="$OpenVINOGenAI_DIR")
     fi
     cmake "${cmake_args[@]}"
-    cmake --build "$BUILD_DIR" -j"$(nproc)"
+    cmake --build "$BUILD_DIR" -j"${SCRYBE_BUILD_JOBS:-$(nproc)}"
     ok "Build complete: $BUILD_DIR/bin/scrybe"
 else
     warn "Skipping build (SCRYBE_SKIP_BUILD set)."
 fi
 
 # ---------------------------------------------------------------------------- #
-# Phase 7 — Install binary
+# Phase 7 — Stage and activate a complete runtime bundle
 # ---------------------------------------------------------------------------- #
-step "Installing binary to $PREFIX/bin"
-mkdir -p "$PREFIX/bin"
-install -m755 "$BUILD_DIR/bin/scrybe" "$PREFIX/bin/scrybe"
-ok "Installed $PREFIX/bin/scrybe"
+step "Installing runtime bundle to $PREFIX"
+bash "$SCRIPT_DIR/scripts/install-runtime.sh" install "$SCRIPT_DIR" "$BUILD_DIR" "$PREFIX"
+ok "Installed runtime; scrybe-rollback restores the previous app bundle."
 case ":$PATH:" in *":$PREFIX/bin:"*) ;; *) warn "$PREFIX/bin is not on your PATH.";; esac
 
 # ---------------------------------------------------------------------------- #

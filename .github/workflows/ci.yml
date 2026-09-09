@@ -54,4 +54,5 @@ jobs:
       - name: Test asynchronous recording regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure -E sidecar_protocol
+        # Installer fixtures run in unit-tests; the Fedora container runs as root.
+        run: ctest --test-dir build --output-on-failure -E 'sidecar_protocol|installer'

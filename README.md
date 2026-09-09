@@ -25,6 +25,21 @@ Scrybe and sets it up as a desktop app with a global hotkey and login autostart.
 Then launch **Scrybe** from your app menu (it lives in the system tray) and press
 **`Meta+Alt+D`** to dictate.
 
+The online installer requires Git. It prefers the newest stable version tag
+when available, otherwise `main`, and resolves the fetched revision to one
+commit before building in a separate checkout. Set `SCRYBE_REF` to a tag or
+commit, or `SCRYBE_BRANCH=main` to explicitly follow development. Existing dirty
+or unrelated `SCRYBE_SRC` paths are refused; clean previous sources are retained
+beside the checkout instead of deleted.
+
+Executable, clipboard helper, and Python sidecar are published together under
+`~/.local/share/scrybe/runtime` (`SCRYBE_PREFIX/share/scrybe/runtime` for a custom
+prefix). A failed fetch/build keeps the current app active. Run
+`~/.local/bin/scrybe-rollback` and restart Scrybe to restore the previous bundle.
+Older bundles and source backups remain available until you remove them.
+Rollback covers app files; system packages, shared Python environments, models,
+and configuration are not reverted.
+
 > Supported distributions: **Fedora**, **Arch**, **Debian/Ubuntu**, **openSUSE**
 > (KDE Plasma 6 / Wayland). Works on **Intel, NVIDIA, AMD, or CPU-only** machines.
 

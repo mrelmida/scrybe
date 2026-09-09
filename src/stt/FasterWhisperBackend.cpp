@@ -3,6 +3,7 @@
 #include "util/PythonEnv.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDir>
 #include <QDeadlineTimer>
 #include <QJsonParseError>
@@ -13,9 +14,12 @@
 #include <QStandardPaths>
 
 namespace {
-// Locate the sidecar: installed data dir first, then next to the source tree.
+// Runtime bundles pair the sidecar with the running executable. Keep legacy
+// locations as a fallback for existing installs and development builds.
 QString sidecarPath() {
     const QStringList candidates = {
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("../scripts/faster_whisper_sidecar.py")),
         QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
             .filePath(QStringLiteral("scrybe/backends/faster_whisper_sidecar.py")),
         QStringLiteral("/usr/local/share/scrybe/faster_whisper_sidecar.py"),

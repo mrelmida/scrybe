@@ -9,6 +9,8 @@ endforeach()
 # Sidecar protocol test (plain Python; exits 77 = SKIP when numpy is missing).
 find_program(SCRYBE_PYTHON3 python3 REQUIRED)
 if(SCRYBE_PYTHON3)
+    add_test(NAME staged_installer
+        COMMAND ${SCRYBE_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/test_installer.py)
     add_test(NAME sidecar_protocol
         COMMAND ${SCRYBE_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/test_sidecar.py
                 ${CMAKE_SOURCE_DIR}/scripts/faster_whisper_sidecar.py)
