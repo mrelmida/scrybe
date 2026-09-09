@@ -6,7 +6,8 @@
 
 Press a global hotkey, an animated overlay appears with a live voice visualizer,
 you talk, and your words are pasted straight into whatever app you're using.
-All speech recognition runs **locally** — nothing leaves your machine.
+Speech recognition runs **locally** by default. Configuring remote whisper.cpp
+or Ollama endpoints sends audio or text to those services.
 
 </div>
 
@@ -87,12 +88,18 @@ Settings live in `~/.config/scrybe/scrybe.conf` and most are exposed in the tray
 | `stt/model` | `tiny`·`base`·`small`·`medium`·`turbo`·`large-v3`·`distil` | `small` | model size |
 | `stt/device` | `AUTO:GPU,CPU`·`GPU`·`CPU`·`NPU`·`cuda`·`cpu` | `AUTO:GPU,CPU` | compute device |
 | `stt/language` | `auto` or a code (`en`, `de`, `tr`, …) | `auto` | dictation language |
+| `stt/vad` | `true`·`false` | `true` | skip recordings without detected voice activity |
+| `stt/autoSendSecs` | seconds; `0` disables | `0` | finalize after detected speech followed by silence |
+| `audio/device` | base64 device ID; empty for default | empty | microphone selected in Settings ▸ Microphone |
+| `audio/gain` | `1`–`25` | `9` | meter/overlay display scale; does not change captured audio or VAD |
 | `ui/preview` | `true`·`false` | `true` | live transcription preview |
 | `island/position` | `top`·`bottom` | `top` | overlay anchor |
 | `paste/restoreClipboard` | `true`·`false` | `true` | restore clipboard after paste |
 | `paste/restoreDelayMs` | ms | `1000` | grace period before restoring the clipboard |
 | `paste/shortcut` | `ctrl+v`·`ctrl+shift+v` | `ctrl+v` | paste shortcut (`ctrl+shift+v` for terminals) |
 | `llm/model` | Ollama model | `qwen2.5:1.5b` | cleanup model |
+| `llm/endpoint` | URL | `http://localhost:11434` | Ollama endpoint |
+| `presetTemps/<name>` | `0`–`1` | `0.3` | custom formatting preset temperature |
 | `whispercpp/endpoint` | URL | `http://127.0.0.1:8080` | whisper-server endpoint |
 | `update/versionUrl` | URL | GitHub `VERSION` | where to check for updates |
 | `update/autoCheck` | `true`·`false` | `true` | check for updates on launch |
@@ -154,8 +161,10 @@ by a local Ollama model. Pick a **style**:
 - **Custom presets** — write your own instruction (e.g. *"Rewrite as a formal
   email."*); saved presets appear in the style dropdown.
 
-It never answers questions or changes meaning, and falls back to the raw text if
-Ollama isn't running. Pull a model with `ollama pull qwen2.5:1.5b`.
+The prompt asks it to preserve meaning, but generated edits can still change
+content. It falls back to raw text if Ollama fails. Pull a model with
+`ollama pull qwen2.5:1.5b`. Settings includes connection testing, preset generation,
+and a sample-text preview; review generated instructions before saving them.
 
 ## Updates
 
@@ -206,6 +215,11 @@ scripts/uninstall.sh --purge    # also remove models, config, and OpenVINO
   `input` group (the installer configures this; **log out/in once** after the
   first install). For terminals, set `paste/shortcut` to `ctrl+shift+v`.
 - **Hotkey does nothing** — check *System Settings → Shortcuts → Scrybe*.
+- **Quiet or immediate-start words are skipped** — turn off **Speech ▸ Skip
+  silence**. Energy VAD can recover immediate speech after a brief pause, but
+  cannot reliably distinguish continuous speech from constant background noise.
+  Abrupt noise changes can also trigger it. The microphone meter scale affects
+  display only; adjust actual input volume in your system sound settings.
 - **First dictation shows "Loading speech model…"** — normal; the model loads on
   demand and is cached afterward.
 
@@ -241,7 +255,7 @@ and a full application build on Fedora.
 - [x] Hardware-aware install + on-demand backend management in the UI
 - [x] Automatic updates
 - [x] Configurable paste shortcut (terminal support via `paste/shortcut`)
-- [ ] Voice-activity detection
+- [x] Energy-based voice activity detection and optional silence auto-send
 - [ ] Per-app paste shortcut overrides
 
 ## License

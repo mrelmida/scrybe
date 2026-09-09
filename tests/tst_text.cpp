@@ -7,6 +7,14 @@ using scrybe::unquote;
 class TestText : public QObject {
     Q_OBJECT
 private slots:
+    void presetNames() {
+        QVERIFY(scrybe::validPresetName(QStringLiteral("Formal email")));
+        QVERIFY(scrybe::validPresetName(QStringLiteral("  Türkçe  ")));
+        for (const auto &name : {"", "  ", "format", " markdown ", "summary",
+                                 "work/email", "work\\email", "bad\nname"})
+            QVERIFY2(!scrybe::validPresetName(QString::fromUtf8(name)), name);
+    }
+
     void unquoting() {
         QCOMPARE(unquote("\"hello\""), QStringLiteral("hello"));
         QCOMPARE(unquote("'hello'"), QStringLiteral("hello"));

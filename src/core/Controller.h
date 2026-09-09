@@ -93,7 +93,7 @@ public:
     Q_INVOKABLE QStringList presetNames() const;
     Q_INVOKABLE QString presetPrompt(const QString &name) const;
     Q_INVOKABLE double presetTemp(const QString &name) const;
-    Q_INVOKABLE void savePreset(const QString &name, const QString &prompt,
+    Q_INVOKABLE bool savePreset(const QString &name, const QString &prompt,
                                 double temp = 0.3);
     Q_INVOKABLE void deletePreset(const QString &name);
     // AI helpers for the preset editor (results arrive via the signals below).

@@ -504,7 +504,7 @@ Window {
                             ColumnLayout {
                                 Layout.fillWidth: true; spacing: 2
                                 Field { text: "Skip silence" }
-                                Caption { text: "Only transcribe when speech is detected. Stops Whisper from hallucinating fillers (“Thank you”, “you”) on ambient noise, and saves compute." }
+                                Caption { text: "Skip recordings with no detected voice activity to reduce empty transcriptions. Energy detection can miss quiet or continuous speech and mistake changing noise for speech. Turn this off if words are skipped." }
                             }
                             Toggle { checked: controller.vadEnabled; onToggled: controller.vadEnabled = checked }
                         }
@@ -571,14 +571,14 @@ Window {
                         }
                         Caption { text: "Which input Scrybe records from. Plugged in a new mic? Revisit this pane to refresh the list." }
 
-                        Field { text: "Sensitivity  ·  gain ×" + controller.micGain.toFixed(1) }
+                        Field { text: "Level meter scale  ·  ×" + controller.micGain.toFixed(1) }
                         Sld {
                             id: gainSlider
                             from: 1; to: 25; stepSize: 0.5
                             value: controller.micGain
                             onMoved: controller.setMicGain(value)
                         }
-                        Caption { text: "Raises quiet mics so the level meter and live preview react to normal speaking volume. Higher isn't always better — if the meter pins at full during silence, lower it." }
+                        Caption { text: "Changes how strongly the level meter and overlay react. Recorded volume, transcription, and voice detection stay the same. Adjust microphone input volume in your system sound settings." }
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -666,6 +666,7 @@ Window {
                             Repeater {
                                 model: llmPane.probe.models
                                 delegate: Rectangle {
+                                    required property string modelData
                                     property bool sel: modelData === controller.llmModel
                                     implicitHeight: 26; implicitWidth: chipText.implicitWidth + 20
                                     radius: 13
@@ -732,7 +733,15 @@ Window {
                     property bool generating: false
                     property bool testing: false
                     property string errorText: ""
+                    property int editorRevision: 0
+                    property int sampleRevision: 0
+                    property int draftRevision: -1
+                    property string draftDescription: ""
+                    property int previewRevision: -1
+                    property int previewSampleRevision: -1
+                    onEditorRevisionChanged: if (testOutput) testOutput.text = ""
                     function load(name) {
+                        ++presetPane.editorRevision
                         presetName.text = name
                         presetBody.text = controller.presetPrompt(name)
                         tempSlider.value = controller.presetTemp(name)
@@ -743,20 +752,28 @@ Window {
                         function onPresetsChanged() { presetPane.names = controller.presetNames() }
                         function onPresetDraftReady(text) {
                             presetPane.generating = false
+                            if (presetPane.draftRevision !== presetPane.editorRevision
+                                    || presetPane.draftDescription !== draftDesc.text.trim()) return
                             presetBody.text = text
                             presetPane.errorText = ""
                         }
                         function onPresetDraftFailed(message) {
                             presetPane.generating = false
+                            if (presetPane.draftRevision !== presetPane.editorRevision
+                                    || presetPane.draftDescription !== draftDesc.text.trim()) return
                             presetPane.errorText = message
                         }
                         function onPresetTestReady(text) {
                             presetPane.testing = false
+                            if (presetPane.previewRevision !== presetPane.editorRevision
+                                    || presetPane.previewSampleRevision !== presetPane.sampleRevision) return
                             testOutput.text = text
                             presetPane.errorText = ""
                         }
                         function onPresetTestFailed(message) {
                             presetPane.testing = false
+                            if (presetPane.previewRevision !== presetPane.editorRevision
+                                    || presetPane.previewSampleRevision !== presetPane.sampleRevision) return
                             presetPane.errorText = message
                         }
                     }
@@ -795,7 +812,10 @@ Window {
                         }
 
                         Field { text: "Preset name" }
-                        TxtField { id: presetName; placeholderText: "e.g. Formal email" }
+                        TxtField {
+                            id: presetName; placeholderText: "e.g. Formal email"
+                            onTextChanged: ++presetPane.editorRevision
+                        }
 
                         Field { text: "Instruction" }
                         ScrollView {
@@ -803,6 +823,7 @@ Window {
                             Layout.preferredHeight: 130
                             TextArea {
                                 id: presetBody
+                                onTextChanged: ++presetPane.editorRevision
                                 color: win.txt; font.pixelSize: 14
                                 wrapMode: TextArea.Wrap
                                 placeholderText: "e.g. Rewrite the text as a polite, well-structured email with a greeting and sign-off."
@@ -816,6 +837,7 @@ Window {
                         }
                         Sld {
                             id: tempSlider
+                            onValueChanged: ++presetPane.editorRevision
                             from: 0; to: 1; stepSize: 0.05
                             value: 0.3
                         }
@@ -828,13 +850,17 @@ Window {
                                 text: "Save preset"; primary: true
                                 enabled: presetName.text.trim() !== "" && presetBody.text.trim() !== ""
                                 onClicked: {
-                                    controller.savePreset(presetName.text.trim(), presetBody.text.trim(), tempSlider.value)
-                                    controller.setBeautifyStyle(presetName.text.trim())
+                                    if (controller.savePreset(presetName.text.trim(), presetBody.text.trim(), tempSlider.value)) {
+                                        controller.setBeautifyStyle(presetName.text.trim())
+                                        presetPane.errorText = ""
+                                    } else {
+                                        presetPane.errorText = "Choose a name without slashes or control characters. The names format, markdown, and summary are reserved."
+                                    }
                                 }
                             }
                             Btn {
                                 text: "New"
-                                onClicked: { presetName.text = ""; presetBody.text = ""; tempSlider.value = 0.3 }
+                                onClicked: { ++presetPane.editorRevision; presetName.text = ""; presetBody.text = ""; tempSlider.value = 0.3 }
                             }
                             Btn {
                                 text: "Delete"; danger: true
@@ -864,6 +890,8 @@ Window {
                                 enabled: !presetPane.generating && draftDesc.text.trim() !== ""
                                 onClicked: {
                                     presetPane.generating = true
+                                    presetPane.draftRevision = presetPane.editorRevision
+                                    presetPane.draftDescription = draftDesc.text.trim()
                                     presetPane.errorText = ""
                                     controller.generatePreset(draftDesc.text.trim())
                                 }
@@ -877,6 +905,10 @@ Window {
                             spacing: 10
                             TxtField {
                                 id: sampleField
+                                onTextChanged: {
+                                    ++presetPane.sampleRevision
+                                    testOutput.text = ""
+                                }
                                 placeholderText: "e.g. um so basically we need to fix the login bug before friday"
                             }
                             Btn {
@@ -884,6 +916,8 @@ Window {
                                 enabled: !presetPane.testing && presetBody.text.trim() !== "" && sampleField.text.trim() !== ""
                                 onClicked: {
                                     presetPane.testing = true
+                                    presetPane.previewRevision = presetPane.editorRevision
+                                    presetPane.previewSampleRevision = presetPane.sampleRevision
                                     presetPane.errorText = ""
                                     testOutput.text = ""
                                     controller.testPreset(presetBody.text.trim(), tempSlider.value, sampleField.text.trim())

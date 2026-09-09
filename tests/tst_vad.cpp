@@ -10,6 +10,8 @@ using scrybe::Vad;
 
 namespace {
 
+// These synthetic signals verify energy thresholds and timing only. They do
+// not establish recognition quality on real speech, microphones, or noise.
 // Uniform noise at a target RMS (uniform [-a,a] has RMS a/√3). Deterministic
 // seed so runs are reproducible.
 std::vector<float> noise(int samples, double rms, unsigned seed = 42) {
@@ -29,6 +31,84 @@ int secs(double s) { return int(s * kRate); }
 class TestVad : public QObject {
     Q_OBJECT
 private slots:
+    void immediateEnergyRecoveredOnPause_data() {
+        QTest::addColumn<double>("activeRms");
+        QTest::addColumn<double>("ambientRms");
+        QTest::newRow("modest-input") << 0.02 << 0.004;
+        QTest::newRow("quiet-input") << 0.012 << 0.002;
+        QTest::newRow("louder-input") << 0.06 << 0.015;
+    }
+
+    void immediateEnergyRecoveredOnPause() {
+        QFETCH(double, activeRms);
+        QFETCH(double, ambientRms);
+        Vad vad(kRate);
+        const auto active = noise(secs(0.6), activeRms);
+        const auto pause = noise(secs(0.3), ambientRms, 23);
+        vad.process(active.data(), qint64(active.size()));
+        vad.process(pause.data(), qint64(pause.size()));
+        QVERIFY(vad.hasSpeech());
+        QVERIFY(vad.inSpeech());
+        QVERIFY(vad.silenceMs() >= 270);
+        QVERIFY(vad.silenceMs() <= 330);
+        vad.process(pause.data(), qint64(pause.size()));
+        QVERIFY(!vad.inSpeech());
+        QVERIFY(vad.silenceMs() >= 570);
+    }
+
+    void longImmediateEnergyRecoveredOnPause() {
+        // A first utterance can outlast the bounded RMS history.
+        Vad vad(kRate);
+        const auto active = noise(secs(5.1), 0.02);
+        const auto pause = noise(secs(0.3), 0.004, 23);
+        vad.process(active.data(), qint64(active.size()));
+        vad.process(pause.data(), qint64(pause.size()));
+        QVERIFY(vad.hasSpeech());
+        QVERIFY(vad.silenceMs() >= 270);
+    }
+
+    void startupClickDoesNotTriggerWhenFloorFalls() {
+        Vad vad(kRate);
+        const auto click = noise(secs(0.06), 0.03);
+        const auto ambient = noise(secs(1.5), 0.002, 23);
+        vad.process(click.data(), qint64(click.size()));
+        vad.process(ambient.data(), qint64(ambient.size()));
+        QVERIFY(!vad.hasSpeech());
+    }
+
+    void repeatedTransientsDoNotTrigger() {
+        Vad vad(kRate);
+        for (int i = 0; i < 12; ++i) {
+            const auto click = noise(secs(0.06), 0.03, unsigned(i + 1));
+            const auto quiet = noise(secs(0.24), 0.002, unsigned(i + 30));
+            vad.process(click.data(), qint64(click.size()));
+            vad.process(quiet.data(), qint64(quiet.size()));
+        }
+        QVERIFY(!vad.hasSpeech());
+    }
+
+    void gradualNoiseChangeDoesNotTrigger() {
+        Vad vad(kRate);
+        // Slow background changes remain within the adaptive floor. Abrupt
+        // large changes remain an acknowledged limitation of energy VAD.
+        for (int i = 0; i < 200; ++i) {
+            const double rms = 0.01 + 0.004 * (1.0 - std::abs(i - 100) / 100.0);
+            const auto frame = noise(480, rms, unsigned(i + 1));
+            vad.process(frame.data(), qint64(frame.size()));
+        }
+        QVERIFY(!vad.hasSpeech());
+    }
+
+    void resetDiscardsRecentEnergy() {
+        Vad vad(kRate);
+        const auto active = noise(secs(0.6), 0.02);
+        const auto quiet = noise(secs(0.6), 0.002);
+        vad.process(active.data(), qint64(active.size()));
+        vad.reset(kRate);
+        vad.process(quiet.data(), qint64(quiet.size()));
+        QVERIFY(!vad.hasSpeech());
+    }
+
     void silenceIsNotSpeech() {
         Vad vad(kRate);
         const auto quiet = noise(secs(2.0), 0.002);

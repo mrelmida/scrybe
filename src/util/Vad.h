@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace scrybe {
@@ -12,10 +13,11 @@ namespace scrybe {
 //
 // A fixed RMS threshold is unreliable here (ambient ≈ 0.04 vs speech ≈ 0.1 on
 // a typical laptop mic), so speech is instead anything sustained above
-// kEnterRatio × the tracked noise floor. The floor seeds from the quietest of
-// the first few frames (the user's reaction time after the hotkey guarantees
-// they start in ambience), falls quickly, and rises only slowly so speech
-// can't drag it up.
+// kEnterRatio × the tracked noise floor. The floor seeds from the quietest early
+// frame, falls quickly, and rises slowly. Recent frames are reconsidered when
+// the floor falls, so speech starting with the hotkey can be recovered on its
+// first pause. Energy alone cannot distinguish constant speech from constant
+// noise, or speech from a sufficiently large change in background noise.
 class Vad {
 public:
     explicit Vad(int sampleRate = 16000);
@@ -33,6 +35,7 @@ public:
 
 private:
     void pushFrame(double rms);
+    void reconsiderRecentFrames(double threshold);
 
     int m_rate = 16000;
     int m_frameSamples = 480;   // 30 ms at the current rate
@@ -45,6 +48,9 @@ private:
     bool m_hasSpeech = false;
     int64_t m_framesTotal = 0;
     int64_t m_lastSpeechFrame = -1;
+    // Two seconds of RMS values, not audio. Bounded even for long recordings.
+    std::array<double, 67> m_recent{};
+    int m_recentCount = 0;
 };
 
 } // namespace scrybe

@@ -32,7 +32,7 @@ public:
 public slots:
     void start();
     void stop();
-    void setGain(qreal gain);   // applies live to a running capture
+    void setGain(qreal gain);   // display scale only; applies live to the meter
 
 signals:
     void levelChanged(qreal level);   // 0..1, smoothed for display

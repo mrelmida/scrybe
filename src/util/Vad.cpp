@@ -32,6 +32,7 @@ void Vad::reset(int sampleRate) {
     m_hasSpeech = false;
     m_framesTotal = 0;
     m_lastSpeechFrame = -1;
+    m_recentCount = 0;
 }
 
 void Vad::process(const float *samples, int64_t count) {
@@ -46,9 +47,11 @@ void Vad::process(const float *samples, int64_t count) {
 }
 
 void Vad::pushFrame(double rms) {
+    const double previousFloor = m_floor;
+    m_recent[m_framesTotal % m_recent.size()] = rms;
+    m_recentCount = std::min(m_recentCount + 1, int(m_recent.size()));
     if (m_seedFrames > 0) {
-        // Seed the floor from the quietest early frame; the hotkey-to-speech
-        // reaction gap means these are ambience.
+        // This is a provisional baseline: recording may start during speech.
         m_floor = std::clamp(std::min(m_floor, rms), kFloorMin, kFloorMax);
         --m_seedFrames;
     } else if (rms < m_floor) {
@@ -69,7 +72,30 @@ void Vad::pushFrame(double rms) {
         if (m_hangover > 0)
             --m_hangover;
     }
+    if (m_floor < previousFloor)
+        reconsiderRecentFrames(threshold);
     ++m_framesTotal;
+}
+
+void Vad::reconsiderRecentFrames(double threshold) {
+    int run = 0;
+    for (int64_t frame = m_framesTotal - m_recentCount + 1;
+         frame <= m_framesTotal; ++frame) {
+        if (m_recent[frame % m_recent.size()] > threshold) {
+            if (++run >= kEnterFrames) {
+                m_hasSpeech = true;
+                m_lastSpeechFrame = std::max(m_lastSpeechFrame, frame);
+            }
+        } else {
+            run = 0;
+        }
+    }
+    if (m_hasSpeech) {
+        // Preserve the actual silence duration; detection on a pause must not
+        // make auto-send wait a second time starting from the discovery frame.
+        m_hangover = std::max<int64_t>(0, kHangoverFrames -
+                                            (m_framesTotal - m_lastSpeechFrame));
+    }
 }
 
 double Vad::silenceMs() const {

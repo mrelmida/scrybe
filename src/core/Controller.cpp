@@ -6,6 +6,7 @@
 #include "stt/Models.h"
 #include "stt/SttEngine.h"
 #include "util/PythonEnv.h"
+#include "util/Text.h"
 #include "update/Updater.h"
 #include "util/Terminal.h"
 
@@ -697,14 +698,16 @@ double Controller::presetTemp(const QString &name) const {
     return QSettings().value(QStringLiteral("presetTemps/") + name, 0.3).toDouble();
 }
 
-void Controller::savePreset(const QString &name, const QString &prompt,
+bool Controller::savePreset(const QString &name, const QString &prompt,
                             double temp) {
     const QString n = name.trimmed();
-    if (n.isEmpty()) return;
+    if (!scrybe::validPresetName(n) || prompt.trimmed().isEmpty())
+        return false;
     QSettings s;
     s.setValue(QStringLiteral("presets/") + n, prompt);
     s.setValue(QStringLiteral("presetTemps/") + n, qBound(0.0, temp, 1.0));
     emit presetsChanged();
+    return true;
 }
 
 void Controller::deletePreset(const QString &name) {
