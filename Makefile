@@ -21,7 +21,7 @@ setup:
 
 # Install just the built binary + desktop launcher + icon (deps already present).
 install: build
-	install -Dm755 $(BUILD)/bin/scrybe $(PREFIX)/bin/scrybe
+	bash scripts/install-runtime.sh install "$(CURDIR)" "$(BUILD)" "$(PREFIX)"
 	install -Dm644 packaging/scrybe.svg $(PREFIX)/share/icons/hicolor/scalable/apps/scrybe.svg
 	sed 's|^Exec=scrybe|Exec=$(PREFIX)/bin/scrybe|' packaging/scrybe.desktop \
 		> $(PREFIX)/share/applications/scrybe.desktop

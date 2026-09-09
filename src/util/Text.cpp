@@ -14,6 +14,11 @@ bool validPresetName(const QString &name) {
     return true;
 }
 
+QString shellQuote(QString s) {
+    s.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QLatin1Char('\'') + s + QLatin1Char('\'');
+}
+
 QString unquote(QString s) {
     s = s.trimmed();
     if (s.size() >= 2 &&
