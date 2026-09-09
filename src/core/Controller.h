@@ -155,10 +155,11 @@ signals:
     void llmProbeChanged();                // an async Ollama reachability probe finished
 
 private:
+    friend class ControllerSessionTest; // drives delayed completions without real capture
     void setState(State s);
     void setLevel(qreal v);
     void setTranscript(const QString &t);
-    void onTranscript(const QString &text, bool isFinal);
+    void onTranscript(const QString &text, bool isFinal, quint64 session, quint64 request);
     void finish();                            // brief Pasting state → Idle
     void requestPartial();                    // rolling live transcription
     QString device() const;
@@ -188,7 +189,8 @@ private:
     QTimer *m_unloadTimer = nullptr;   // unloads the model after idle
     QTimer *m_autoSendTimer = nullptr; // watches for post-speech silence
     bool m_sttBusy = false;   // a transcription is in flight
-    bool m_cancelled = false; // ignore results after a cancel
+    quint64 m_session = 0;    // invalidates callbacks across cancel/restart
+    quint64 m_sttRequest = 0; // only this request can clear the busy flag
     bool m_modelReady = false;
     bool m_modelLoading = false;
     bool m_previewEnabled = true;

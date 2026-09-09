@@ -14,3 +14,30 @@ if(SCRYBE_PYTHON3)
                 ${CMAKE_SOURCE_DIR}/scripts/faster_whisper_sidecar.py)
     set_tests_properties(sidecar_protocol PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+# Async recording regressions remain runnable without GUI/KDE or actual models.
+add_executable(tst_stt_session tst_stt_session.cpp
+    ${CMAKE_SOURCE_DIR}/src/stt/SttEngine.cpp)
+target_link_libraries(tst_stt_session PRIVATE scrybe_core Qt6::Test)
+add_test(NAME stt_session COMMAND tst_stt_session)
+
+find_package(Qt6 REQUIRED COMPONENTS Network)
+add_executable(tst_llm_session tst_llm_session.cpp
+    ${CMAKE_SOURCE_DIR}/src/llm/LlmBeautifier.cpp)
+target_link_libraries(tst_llm_session PRIVATE scrybe_core Qt6::Test Qt6::Network)
+add_test(NAME llm_session COMMAND tst_llm_session)
+
+if(SCRYBE_BUILD_APP)
+    find_package(Qt6 REQUIRED COMPONENTS Gui Multimedia)
+    add_executable(tst_controller_session tst_controller_session.cpp
+        ${CMAKE_SOURCE_DIR}/src/core/Controller.cpp
+        ${CMAKE_SOURCE_DIR}/src/audio/AudioCapture.cpp
+        ${CMAKE_SOURCE_DIR}/src/stt/SttEngine.cpp
+        ${CMAKE_SOURCE_DIR}/src/llm/LlmBeautifier.cpp
+        ${CMAKE_SOURCE_DIR}/src/paste/Paster.cpp
+        ${CMAKE_SOURCE_DIR}/src/update/Updater.cpp)
+    target_compile_definitions(tst_controller_session PRIVATE SCRYBE_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(tst_controller_session PRIVATE scrybe_core Qt6::Test
+        Qt6::Network Qt6::Gui Qt6::Multimedia)
+    add_test(NAME controller_session COMMAND tst_controller_session)
+endif()

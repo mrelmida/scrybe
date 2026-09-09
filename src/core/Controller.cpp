@@ -96,8 +96,8 @@ Controller::Controller(QObject *parent) : QObject(parent) {
 
     m_stt = new SttEngine(this);
     connect(m_stt, &SttEngine::transcript, this,
-            [this](const QString &text, const QString &, bool isFinal) {
-                onTranscript(text, isFinal);
+            [this](const QString &text, const QString &, bool isFinal, quint64 session, quint64 request) {
+                onTranscript(text, isFinal, session, request);
             });
     connect(m_stt, &SttEngine::error, this, [this](const QString &msg) {
         m_modelLoading = false;
@@ -106,6 +106,20 @@ Controller::Controller(QObject *parent) : QObject(parent) {
             setState(Idle);
             emit requestHide();
         }
+    });
+    connect(m_stt, &SttEngine::transcriptionFailed, this,
+            [this](const QString &message, bool isFinal, quint64 session, quint64 request) {
+        if (session != m_session || request != m_sttRequest)
+            return;
+        m_sttBusy = false;
+        m_sttRequest = 0;
+        // Preview failures can be retried by the next timer tick.
+        if (!isFinal)
+            return;
+        emit notify(message);
+        setState(Idle);
+        emit requestHide();
+        scheduleUnload();
     });
     connect(m_stt, &SttEngine::ready, this, [this](const QString &dev) {
         m_modelReady = true;
@@ -123,13 +137,13 @@ Controller::Controller(QObject *parent) : QObject(parent) {
             [this](const QString &msg) { emit notify(msg); });
 
     m_llm = new LlmBeautifier(this);
-    connect(m_llm, &LlmBeautifier::done, this, [this](const QString &text) {
-        if (m_state != Beautifying || m_cancelled) return;
+    connect(m_llm, &LlmBeautifier::done, this, [this](const QString &text, quint64 session) {
+        if (m_state != Beautifying || session != m_session) return;
         setTranscript(text);
         finish();
     });
-    connect(m_llm, &LlmBeautifier::failed, this, [this](const QString &msg) {
-        if (m_state != Beautifying || m_cancelled) return;
+    connect(m_llm, &LlmBeautifier::failed, this, [this](const QString &msg, quint64 session) {
+        if (m_state != Beautifying || session != m_session) return;
         emit notify(msg + tr(" — pasting raw text."));
         finish();   // m_transcript still holds the raw text
     });
@@ -735,7 +749,9 @@ void Controller::toggle() {
 
 void Controller::startListening() {
     if (m_state != Idle) return;
-    m_cancelled = false;
+    m_stt->setSession(++m_session);
+    m_llm->cancel();
+    m_sttRequest = 0;
     m_sttBusy = false;
     m_partialTruncated = false;
     m_stt->setDropPartials(false);
@@ -767,8 +783,8 @@ void Controller::requestPartial() {
     const qsizetype maxSamples = qsizetype(kPartialWindowSecs) * rate;
     m_partialTruncated = pcm.size() > maxSamples;
     m_sttBusy = true;
-    m_stt->transcribe(m_partialTruncated ? pcm.mid(pcm.size() - maxSamples) : pcm,
-                      rate, m_language, /*isFinal=*/false);
+    m_sttRequest = m_stt->transcribe(m_partialTruncated ? pcm.mid(pcm.size() - maxSamples) : pcm,
+                      rate, m_language, /*isFinal=*/false, m_session);
 }
 
 void Controller::stopListening() {
@@ -798,7 +814,7 @@ void Controller::stopListening() {
     }
     setState(Transcribing);
     m_sttBusy = true;
-    m_stt->transcribe(pcm, rate, m_language, /*isFinal=*/true);
+    m_sttRequest = m_stt->transcribe(pcm, rate, m_language, /*isFinal=*/true, m_session);
 }
 
 void Controller::send() {
@@ -814,7 +830,10 @@ void Controller::cancel() {
     m_autoSendTimer->stop();
     m_stt->setDropPartials(true);
     m_audio->stop();
-    m_cancelled = true;   // ignore any in-flight STT result
+    m_stt->setSession(++m_session);
+    m_llm->cancel();
+    m_sttRequest = 0;
+    m_sttBusy = false;
     setLevel(0.0);
     setTranscript(QString());
     setState(Idle);
@@ -822,10 +841,12 @@ void Controller::cancel() {
     scheduleUnload();
 }
 
-void Controller::onTranscript(const QString &text, bool isFinal) {
-    m_sttBusy = false;
-    if (m_cancelled)
+void Controller::onTranscript(const QString &text, bool isFinal,
+                              quint64 session, quint64 request) {
+    if (session != m_session || request != m_sttRequest)
         return;
+    m_sttBusy = false;
+    m_sttRequest = 0;
 
     if (!isFinal) {
         // Live partial: only update while still listening, and never blank out.
@@ -847,7 +868,7 @@ void Controller::onTranscript(const QString &text, bool isFinal) {
     setTranscript(text);
     if (m_llmEnabled) {
         setState(Beautifying);   // overlay shows "Transcribing…"/busy; then paste
-        m_llm->beautify(text, m_beautifyStyle);
+        m_llm->beautify(text, m_beautifyStyle, m_session);
     } else {
         finish();
     }
@@ -859,7 +880,10 @@ void Controller::finish() {
     // Hide the overlay first so it releases the keyboard grab and KWin returns
     // focus to the target app; then paste into it via the clipboard.
     emit requestHide();
-    QTimer::singleShot(220, this, [this, text]() {
+    const quint64 session = m_session;
+    QTimer::singleShot(220, this, [this, text, session]() {
+        if (session != m_session || m_state != Pasting)
+            return;
         if (!text.isEmpty())
             m_paster->paste(text);
         setState(Idle);

@@ -89,6 +89,11 @@ int runTranscribeFile(int argc, char **argv, const QString &wav,
                               ? scrybe::fasterWhisperModel(key)
                               : resolveModelDir();
     stt.load(backend, model, device);
+    QObject::connect(&stt, &SttEngine::transcriptionFailed, &app,
+                     [&](const QString &message) {
+        std::fprintf(stderr, "ERROR: %s\n", qPrintable(message));
+        rc = 3; app.quit();
+    });
     stt.transcribe(pcm, rate, QStringLiteral("auto"), /*isFinal=*/true);
     QTimer::singleShot(180000, &app, [&]() {
         std::fprintf(stderr, "Timed out.\n"); app.quit();

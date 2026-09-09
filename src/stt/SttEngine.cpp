@@ -10,13 +10,14 @@
 // ---------------------------------------------------------------------------- //
 // SttWorker (runs on the worker thread)
 // ---------------------------------------------------------------------------- //
-SttWorker::SttWorker(QObject *parent) : QObject(parent) {}
+SttWorker::SttWorker(SttBackendFactory factory, QObject *parent)
+    : QObject(parent), m_factory(std::move(factory)) {}
 SttWorker::~SttWorker() = default;
 
 void SttWorker::doLoad(const QString &backend, const QString &model,
                        const QString &device) {
     if (!m_backend || m_backendType != backend) {
-        m_backend = makeSttBackend(backend);
+        m_backend = m_factory(backend);
         m_backendType = backend;
     }
     if (!m_backend) {
@@ -38,32 +39,36 @@ void SttWorker::doUnload() {
 }
 
 void SttWorker::doTranscribe(const QVector<float> &pcm, int sampleRate,
-                             const QString &language, bool isFinal) {
-    if (!isFinal && m_dropPartials.load())
-        return;   // stale preview request — the recording already stopped
+                             const QString &language, bool isFinal,
+                             quint64 session, quint64 request) {
+    if (session != m_session.load() || (!isFinal && m_dropPartials.load()))
+        return;
     if (!m_backend) {
-        if (isFinal)
-            emit failed(QStringLiteral("STT backend is not loaded yet."));
+        emit transcriptionFailed(QStringLiteral("STT backend is not loaded yet."),
+                                 isFinal, session, request);
         return;
     }
     std::vector<float> audio = scrybe::resampleTo16k(pcm, sampleRate);
     if (audio.empty()) {
-        emit result(QString(), QString(), isFinal);
+        emit result(QString(), QString(), isFinal, session, request);
         return;
     }
     QString text, err;
-    if (m_backend->transcribe(audio, language, &text, &err))
-        emit result(text, QString(), isFinal);
-    else if (isFinal)
-        emit failed(err);
+    const bool ok = m_backend->transcribe(audio, language, &text, &err);
+    if (session != m_session.load())
+        return;
+    if (ok)
+        emit result(text, QString(), isFinal, session, request);
+    else
+        emit transcriptionFailed(err, isFinal, session, request);
 }
 
 // ---------------------------------------------------------------------------- //
 // SttEngine (GUI-thread facade)
 // ---------------------------------------------------------------------------- //
-SttEngine::SttEngine(QObject *parent) : QObject(parent) {
+SttEngine::SttEngine(QObject *parent, SttBackendFactory factory) : QObject(parent) {
     qRegisterMetaType<QVector<float>>("QVector<float>");
-    m_worker = new SttWorker;
+    m_worker = new SttWorker(factory ? std::move(factory) : makeSttBackend);
     m_worker->moveToThread(&m_thread);
 
     connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
@@ -79,8 +84,15 @@ SttEngine::SttEngine(QObject *parent) : QObject(parent) {
     connect(m_worker, &SttWorker::failed, this,
             [this](const QString &msg) { emit error(msg); });
     connect(m_worker, &SttWorker::result, this,
-            [this](const QString &text, const QString &lang, bool isFinal) {
-                emit transcript(text, lang, isFinal);
+            [this](const QString &text, const QString &lang, bool isFinal,
+                   quint64 session, quint64 request) {
+                if (session == m_session)
+                    emit transcript(text, lang, isFinal, session, request);
+            });
+    connect(m_worker, &SttWorker::transcriptionFailed, this,
+            [this](const QString &message, bool isFinal, quint64 session, quint64 request) {
+                if (session == m_session)
+                    emit transcriptionFailed(message, isFinal, session, request);
             });
 
     m_thread.start();
@@ -101,9 +113,16 @@ void SttEngine::unload() {
     emit requestUnload();
 }
 
-void SttEngine::transcribe(const QVector<float> &pcm, int sampleRate,
-                           const QString &language, bool isFinal) {
-    emit requestTranscribe(pcm, sampleRate, language, isFinal);
+quint64 SttEngine::transcribe(const QVector<float> &pcm, int sampleRate,
+                              const QString &language, bool isFinal, quint64 session) {
+    const quint64 request = ++m_nextRequest;
+    emit requestTranscribe(pcm, sampleRate, language, isFinal, session, request);
+    return request;
+}
+
+void SttEngine::setSession(quint64 session) {
+    m_session = session;
+    m_worker->setSession(session);
 }
 
 void SttEngine::setDropPartials(bool drop) {
