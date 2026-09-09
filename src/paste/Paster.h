@@ -1,34 +1,66 @@
 #pragma once
 
 #include <QObject>
+#include <QQueue>
 #include <QString>
+#include <QTimer>
+#include <memory>
 
-// Pastes text into the currently-focused application via the clipboard, to
-// avoid emitting the text as individual keystrokes:
-//   1. save the current clipboard (wl-paste, async),
-//   2. put the text on the clipboard (wl-copy),
-//   3. inject the paste shortcut (ydotool),
-//   4. restore the previous clipboard after a grace period.
-//
-// Settings (read per paste, so edits apply immediately):
-//   paste/restoreClipboard  restore the previous clipboard (default true)
-//   paste/restoreDelayMs    grace period before restoring (default 1000)
-//   paste/shortcut          "ctrl+v" (default) or "ctrl+shift+v" (terminals)
+class QProcess;
+
+// Serialized asynchronous clipboard transactions. The clipboard helper owns the
+// Wayland selection and preserves every MIME representation until restoration.
+// finished() is emitted exactly once per ID, including cancellation/failure.
 class Paster : public QObject {
     Q_OBJECT
 public:
+    struct Programs {
+        QString clipboardHelper;
+        QString keyInjector = QStringLiteral("ydotool");
+        int prepareTimeoutMs = 8000;
+        int commandTimeoutMs = 2500;
+    };
     explicit Paster(QObject *parent = nullptr);
+    explicit Paster(const Programs &programs, QObject *parent = nullptr);
+    ~Paster() override;
 
-    void paste(const QString &text);
+    quint64 paste(const QString &text);
+    void cancel();
+    QString lastText() const { return m_lastText; }
 
 signals:
     void error(const QString &message);
+    void finished(quint64 transactionId, bool success);
 
 private:
-    void setClipboard(const QString &text);
-    void injectAndRestore(bool restore, int restoreDelayMs);
-    void sendPasteShortcut();
+    struct Request { quint64 id; QString text; };
+    enum class Phase { Preparing, Ready, Injecting, Grace, Finalizing };
+    struct Transaction {
+        Request request;
+        QProcess *helper = nullptr;
+        QProcess *injector = nullptr;
+        Phase phase = Phase::Preparing;
+        bool restore = true;
+        bool success = false;
+        bool cleanupPending = false;
+        bool completionRequested = false;
+        bool completionSuccess = false;
+        int restoreDelayMs = 1000;
+        QString shortcut;
+    };
+    void startNext();
+    void inject(quint64 id);
+    void helperLine(quint64 id, const QByteArray &line);
+    void finalize(bool success);
+    void complete(bool success);
+    bool active(quint64 id) const;
+    void stopInjector();
+    void releaseKeys();
 
-    QString m_savedClipboard;
-    bool m_hadSavedClipboard = false;   // wl-paste succeeded (even if empty)
+    Programs m_programs;
+    QQueue<Request> m_queue;
+    std::unique_ptr<Transaction> m_active;
+    QTimer m_deadline;
+    quint64 m_nextId = 0;
+    QString m_lastText;
 };

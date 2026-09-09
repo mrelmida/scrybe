@@ -44,7 +44,7 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf install -y --setopt=install_weak_deps=False \
-            cmake ninja-build gcc-c++ \
+            cmake ninja-build gcc-c++ wayland-devel \
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel \
             kf6-kglobalaccel-devel layer-shell-qt-devel
       - name: Configure

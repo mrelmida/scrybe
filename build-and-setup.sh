@@ -109,17 +109,17 @@ if [[ -z "${SCRYBE_SKIP_DEPS:-}" ]]; then
         dnf)    pkg_install fatal gcc-c++ cmake ninja-build pkgconf-pkg-config git python3 python3-pip curl \
                     qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel \
                     qt6-qtshadertools-devel layer-shell-qt-devel kf6-kglobalaccel-devel \
-                    wl-clipboard ydotool ;;
+                    wl-clipboard ydotool wayland-devel ;;
         pacman) pkg_install fatal base-devel cmake ninja pkgconf git python python-pip curl \
                     qt6-base qt6-declarative qt6-multimedia qt6-shadertools \
-                    layer-shell-qt kglobalaccel wl-clipboard ydotool ;;
+                    layer-shell-qt kglobalaccel wl-clipboard ydotool wayland ;;
         apt)    pkg_install fatal build-essential cmake ninja-build pkg-config git python3 python3-pip python3-venv curl \
                     qt6-base-dev qt6-declarative-dev qt6-multimedia-dev qt6-shadertools-dev \
-                    liblayershellqtinterface-dev libkf6globalaccel-dev wl-clipboard ydotool ;;
+                    liblayershellqtinterface-dev libkf6globalaccel-dev wl-clipboard ydotool libwayland-dev libwayland-bin ;;
         zypper) pkg_install fatal gcc-c++ cmake ninja pkgconf-pkg-config git python3 python3-pip curl \
                     qt6-base-devel qt6-declarative-devel qt6-multimedia-devel \
                     qt6-shadertools-devel layer-shell-qt6-devel kf6-kglobalaccel-devel \
-                    wl-clipboard ydotool ;;
+                    wl-clipboard ydotool wayland-devel ;;
     esac
     ok "Core dependencies installed."
 else
