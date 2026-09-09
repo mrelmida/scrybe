@@ -28,8 +28,8 @@ python3 tests/test_sidecar.py                              # sidecar protocol te
   pluggable `ISttBackend`s: OpenVINO (in-process, optional), faster-whisper
   (Python sidecar via stdin/stdout JSON+binary protocol), whisper.cpp (HTTP).
 - `src/util/`, `src/stt/Resample.*` — pure-logic `scrybe_core` static lib
-  (version compare, WAV codec, unquote, resampler). Unit-tested in `tests/`;
-  put new testable logic here, not in the Qt classes.
+  (version compare, WAV codec, unquote, resampler, energy VAD). Unit-tested in
+  `tests/`; put new testable logic here, not in the Qt classes.
 - `scripts/faster_whisper_sidecar.py` — protocol documented in its docstring;
   keep in sync with `FasterWhisperBackend.cpp` and `tests/test_sidecar.py`.
 - Settings: QSettings → `~/.config/scrybe/scrybe.conf`. Read keys at point of

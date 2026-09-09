@@ -21,6 +21,8 @@ add_library(scrybe_core STATIC
     src/util/Text.cpp
     src/util/Wav.h
     src/util/Wav.cpp
+    src/util/Vad.h
+    src/util/Vad.cpp
     src/stt/Resample.h
     src/stt/Resample.cpp
 )

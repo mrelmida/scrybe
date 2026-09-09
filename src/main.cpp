@@ -342,6 +342,8 @@ int main(int argc, char **argv) {
 
     if (toggleOnly)
         controller.toggle();
+    if (settingsCmd)
+        controller.setSettingsOpen(true);   // cold start: no daemon handled it
 
     // Quietly check GitHub for a newer release a few seconds after launch
     // (opt out with update/autoCheck=false — no network traffic at all then).
