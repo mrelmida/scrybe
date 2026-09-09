@@ -48,6 +48,10 @@ jobs:
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel \
             kf6-kglobalaccel-devel layer-shell-qt-devel
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCRYBE_WITH_OPENVINO=OFF -DBUILD_TESTING=OFF
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCRYBE_WITH_OPENVINO=OFF -DBUILD_TESTING=ON
       - name: Build
         run: cmake --build build
+      - name: Test asynchronous recording regressions
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure -E sidecar_protocol

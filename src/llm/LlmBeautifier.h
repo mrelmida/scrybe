@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QPointer>
 
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -12,10 +13,11 @@ class QNetworkReply;
 class LlmBeautifier : public QObject {
     Q_OBJECT
 public:
-    explicit LlmBeautifier(QObject *parent = nullptr);
+    explicit LlmBeautifier(QObject *parent = nullptr, QNetworkAccessManager *manager = nullptr);
 
     // style: "format" (clean up) | "markdown" (structure) | "summary" (condense)
-    void beautify(const QString &text, const QString &style);
+    void beautify(const QString &text, const QString &style, quint64 session = 0);
+    void cancel();
 
     // Settings-UI helpers, separate signals so they can't be mistaken for a
     // dictation result by the Controller state machine:
@@ -25,8 +27,8 @@ public:
     void draftPreset(const QString &description);
 
 signals:
-    void done(const QString &text);        // formatted text
-    void failed(const QString &message);   // caller should fall back to raw
+    void done(const QString &text, quint64 session);        // formatted text
+    void failed(const QString &message, quint64 session);   // caller should fall back to raw
     void previewDone(const QString &text);
     void previewFailed(const QString &message);
     void draftDone(const QString &text);
@@ -38,4 +40,5 @@ private:
     QNetworkReply *post(const QString &system, const QString &prompt, double temp);
 
     QNetworkAccessManager *m_nam = nullptr;
+    QPointer<QNetworkReply> m_activeReply;
 };

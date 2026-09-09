@@ -73,8 +73,9 @@ QString parseReply(QNetworkReply *reply, QString *error) {
 
 } // namespace
 
-LlmBeautifier::LlmBeautifier(QObject *parent) : QObject(parent) {
-    m_nam = new QNetworkAccessManager(this);
+LlmBeautifier::LlmBeautifier(QObject *parent, QNetworkAccessManager *manager)
+    : QObject(parent) {
+    m_nam = manager ? manager : new QNetworkAccessManager(this);
 }
 
 QNetworkReply *LlmBeautifier::post(const QString &system, const QString &prompt,
@@ -100,9 +101,18 @@ QNetworkReply *LlmBeautifier::post(const QString &system, const QString &prompt,
     return m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
 }
 
-void LlmBeautifier::beautify(const QString &text, const QString &style) {
+void LlmBeautifier::cancel() {
+    // Clear first: abort can emit finished synchronously.
+    const auto reply = m_activeReply;
+    m_activeReply.clear();
+    if (reply)
+        reply->abort();
+}
+
+void LlmBeautifier::beautify(const QString &text, const QString &style, quint64 session) {
+    cancel();
     if (text.trimmed().isEmpty()) {
-        emit done(text);
+        emit done(text, session);
         return;
     }
     const Style s = styleFor(style);
@@ -110,12 +120,16 @@ void LlmBeautifier::beautify(const QString &text, const QString &style) {
         post(s.system + QString::fromLatin1(kGuard),
              QStringLiteral("Input: ") + text + QStringLiteral("\nOutput:"),
              s.temp);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    m_activeReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, session]() {
         reply->deleteLater();
+        if (m_activeReply != reply)
+            return;
+        m_activeReply.clear();
         QString err;
         const QString out = parseReply(reply, &err);
-        if (out.isEmpty()) emit failed(err);
-        else emit done(out);
+        if (out.isEmpty()) emit failed(err, session);
+        else emit done(out, session);
     });
 }
 
