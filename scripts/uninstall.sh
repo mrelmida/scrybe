@@ -20,6 +20,11 @@ rm -f /tmp/scrybe.ipc
 
 say "Removing app, launcher, icon, and autostart"
 rm -f "$PREFIX/bin/scrybe"
+rm -f "$PREFIX/bin/scrybe-rollback"
+runtime="$PREFIX/share/scrybe/runtime"
+if [[ ! -L "$runtime" && -f "$runtime/.scrybe-managed" ]]; then
+    rm -rf -- "$runtime"
+fi
 rm -f "$PREFIX/share/applications/scrybe.desktop"
 rm -f "$PREFIX/share/icons/hicolor/scalable/apps/scrybe.svg"
 rm -f "$HOME/.config/autostart/scrybe.desktop"

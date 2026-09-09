@@ -1,6 +1,7 @@
 #include "Updater.h"
 
 #include "util/Terminal.h"
+#include "util/Text.h"
 #include "util/Version.h"
 
 #include <QNetworkAccessManager>
@@ -81,25 +82,26 @@ void Updater::installUpdate() {
     const QString installUrl = QSettings()
         .value(QStringLiteral("update/installUrl"),
                QString::fromLatin1(kDefaultInstallUrl)).toString();
-    // Prefer a local checkout if present. Otherwise download the installer to a
-    // temp file first (never `curl | bash`: a dropped connection can't execute a
-    // half-downloaded script) and verify its SHA-256 when a companion
-    // `install.sh.sha256` is published alongside it.
+    const QUrl url(installUrl);
+    if (!url.isValid() || (url.scheme() != QLatin1String("https") &&
+                           url.scheme() != QLatin1String("http"))) {
+        emit notify(tr("The installer URL must use HTTP or HTTPS."));
+        return;
+    }
+    // Always fetch the current installer. A stale local installer may still
+    // overwrite sources or publish mismatched runtime artifacts.
     const QString shellCmd = QStringLiteral(
         "set -e; echo 'Updating Scrybe…'; "
-        "if [ -f \"$HOME/.local/src/scrybe/install.sh\" ]; then "
-        "  bash \"$HOME/.local/src/scrybe/install.sh\"; "
-        "else "
         "  tmp=$(mktemp /tmp/scrybe-install.XXXXXX.sh); trap 'rm -f \"$tmp\"' EXIT; "
-        "  curl -fsSL '%1' -o \"$tmp\"; "
-        "  if sum=$(curl -fsSL '%1.sha256' 2>/dev/null) && [ -n \"$sum\" ]; then "
+        "  curl -fsSL --url %1 -o \"$tmp\"; "
+        "  if sum=$(curl -fsSL --url %2 2>/dev/null) && [ -n \"$sum\" ]; then "
         "    echo \"${sum%% *}  $tmp\" | sha256sum -c - "
         "      || { echo 'Installer checksum mismatch — aborting.'; exit 1; }; "
         "  else echo 'No published checksum; continuing without verification.'; fi; "
         "  bash \"$tmp\"; "
-        "fi; "
         "echo; echo 'Update finished. Restart Scrybe to run the new version.'")
-        .arg(installUrl);
+        .arg(scrybe::shellQuote(installUrl),
+             scrybe::shellQuote(installUrl + QStringLiteral(".sha256")));
 
     if (!scrybe::launchTerminal(shellCmd)) {
         emit notify(tr("No terminal found. Update manually by downloading and "

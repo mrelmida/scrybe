@@ -1,6 +1,7 @@
 #include "util/Text.h"
 
 #include <QtTest>
+#include <QProcess>
 
 using scrybe::unquote;
 
@@ -15,6 +16,16 @@ private slots:
             QVERIFY2(!scrybe::validPresetName(QString::fromUtf8(name)), name);
     }
 
+
+    void shellArgumentIsLiteral() {
+        const QString value = QStringLiteral("https://example.test/a'b?x=$(printf bad)&y=`printf bad`\nnext");
+        QProcess shell;
+        shell.start(QStringLiteral("/bin/sh"),
+                    {QStringLiteral("-c"), QStringLiteral("printf '%s' ") + scrybe::shellQuote(value)});
+        QVERIFY(shell.waitForFinished());
+        QCOMPARE(shell.exitCode(), 0);
+        QCOMPARE(QString::fromUtf8(shell.readAllStandardOutput()), value);
+    }
     void unquoting() {
         QCOMPARE(unquote("\"hello\""), QStringLiteral("hello"));
         QCOMPARE(unquote("'hello'"), QStringLiteral("hello"));
